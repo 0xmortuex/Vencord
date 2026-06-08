@@ -116,16 +116,26 @@ export function isEarlyFinishRequested(guildId: string): boolean {
     return earlyFinishFlags.get(guildId) === true;
 }
 
-// Rate-limit tuning for the guild search API (mirrors UserExporter): the search
-// endpoint is strict, so we pace requests and back off aggressively on 429s.
+// Rate-limit tuning for the guild search API. The endpoint only returns 25 hits
+// per page, so paging dominates the runtime. We start at an optimistic delay and
+// only fall back to the conservative one if the route actually rate-limits us -
+// this is ~3x faster than a fixed 3500ms while still self-correcting on 429s.
 const SEARCH_PAGE_SIZE = 25;
-const BASE_DELAY = 3500;
-const ELEVATED_DELAY = 5000;
-const COOLDOWN_INTERVAL = 10; // pages
-const COOLDOWN_DURATION = 10000;
+const BASE_DELAY = 1200; // optimistic per-page delay
+const ELEVATED_DELAY = 3500; // safe fallback once 429s appear
+const COOLDOWN_INTERVAL = 20; // pages between cooldowns
+const COOLDOWN_DURATION = 4000;
 const MAX_RETRIES = 5;
 const MAX_SEARCH_OFFSET = 2000;
-const RATE_LIMIT_THRESHOLD = 10;
+const RATE_LIMIT_THRESHOLD = 2; // switch to ELEVATED_DELAY after this many cumulative 429s
+
+// Discord snowflakes encode a timestamp, so a date range can be pushed to the
+// server as min_id/max_id instead of scanning and discarding out-of-range pages.
+const DISCORD_EPOCH = 1420070400000;
+function dateToSnowflake(dateStr: string): string {
+    const ms = new Date(dateStr).getTime();
+    return (BigInt(Math.max(0, ms - DISCORD_EPOCH)) << 22n).toString();
+}
 
 function isRateLimitError(e: any): boolean {
     if (e?.status === 429) return true;
@@ -167,6 +177,10 @@ async function searchGuildForAuthor(
             offset,
             include_nsfw: true,
         };
+        // Bound the search by date server-side so we don't page through (and then
+        // discard) messages outside the requested range.
+        if (options.startDate) query.min_id = dateToSnowflake(options.startDate);
+        if (options.endDate) query.max_id = dateToSnowflake(options.endDate);
 
         let res: any = null;
         let succeeded = false;
@@ -254,14 +268,15 @@ async function searchGuildForAuthor(
         onPageProgress(collected.length);
 
         offset += SEARCH_PAGE_SIZE;
+        // Stop without a trailing delay once we've hit the limit or run out.
         if (offset >= total) break;
+        if (limit && collected.length >= limit) break;
 
         if (successfulPages % COOLDOWN_INTERVAL === 0) {
-            console.log("[ServerMemberExporter] Cooling down for 10s...");
             await sleep(COOLDOWN_DURATION);
         }
 
-        const currentDelay = rateLimitState.total429s > RATE_LIMIT_THRESHOLD ? ELEVATED_DELAY : BASE_DELAY;
+        const currentDelay = rateLimitState.total429s >= RATE_LIMIT_THRESHOLD ? ELEVATED_DELAY : BASE_DELAY;
         await sleep(currentDelay);
     }
 }
