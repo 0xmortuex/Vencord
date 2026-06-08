@@ -156,34 +156,51 @@ function memberDisplayName(m: MemberInfo): string {
 function renderMemberSection(data: ExportedMemberData): string {
     const { member, messages } = data;
 
-    // Group this member's messages by channel for readability.
-    const byChannel = new Map<string, { name: string; messages: ExportedMessage[]; }>();
+    // Group this member's messages by server, then by channel, for readability
+    // (messages can span multiple servers).
+    interface ChannelGroup { name: string; messages: ExportedMessage[]; }
+    interface GuildGroup { name: string; channels: Map<string, ChannelGroup>; count: number; }
+    const byGuild = new Map<string, GuildGroup>();
     for (const msg of messages) {
-        if (!byChannel.has(msg.channelId)) {
-            byChannel.set(msg.channelId, { name: msg.channelName, messages: [] });
+        let g = byGuild.get(msg.guildId);
+        if (!g) {
+            g = { name: msg.guildName, channels: new Map(), count: 0 };
+            byGuild.set(msg.guildId, g);
         }
-        byChannel.get(msg.channelId)!.messages.push(msg);
+        let ch = g.channels.get(msg.channelId);
+        if (!ch) {
+            ch = { name: msg.channelName, messages: [] };
+            g.channels.set(msg.channelId, ch);
+        }
+        ch.messages.push(msg);
+        g.count++;
     }
 
+    const channelCount = [...byGuild.values()].reduce((sum, g) => sum + g.channels.size, 0);
     const name = memberDisplayName(member);
     let html = `<div style="margin:24px 16px 0;">
         <div style="padding:12px 16px;background:#1e1f22;border-radius:8px 8px 0 0;border-bottom:2px solid #5865f2;display:flex;align-items:center;gap:12px;">
             <img src="${escapeHtml(member.avatarUrl)}" alt="" style="width:40px;height:40px;border-radius:50%;">
             <div>
                 <div style="font-size:1.125rem;font-weight:700;color:#f2f3f5;">${escapeHtml(name)}</div>
-                <div style="font-size:0.75rem;color:#949ba4;margin-top:2px;">@${escapeHtml(member.username)} &mdash; ${messages.length} message${messages.length !== 1 ? "s" : ""} across ${byChannel.size} channel${byChannel.size !== 1 ? "s" : ""}</div>
+                <div style="font-size:0.75rem;color:#949ba4;margin-top:2px;">@${escapeHtml(member.username)} &mdash; ${messages.length} message${messages.length !== 1 ? "s" : ""} across ${channelCount} channel${channelCount !== 1 ? "s" : ""} in ${byGuild.size} server${byGuild.size !== 1 ? "s" : ""}</div>
                 ${member.topRoleName ? `<div style="font-size:0.75rem;margin-top:2px;color:${member.topRoleColor ? `#${member.topRoleColor.toString(16).padStart(6, "0")}` : "#949ba4"};">${escapeHtml(member.topRoleName)}</div>` : ""}
             </div>
         </div>`;
 
-    for (const ch of byChannel.values()) {
-        html += `<div style="padding:8px 16px;background:#2b2d31;border-bottom:1px solid #1e1f22;">
-            <div style="font-size:0.9375rem;font-weight:600;color:#dbdee1;">#${escapeHtml(ch.name)}</div>
-            <div style="font-size:0.75rem;color:#949ba4;">${ch.messages.length} message${ch.messages.length !== 1 ? "s" : ""}</div>
-        </div>
-        <div style="padding:0 16px 8px;background:#313338;">`;
-        for (const msg of ch.messages) html += renderMessage(msg);
-        html += "</div>";
+    for (const guild of byGuild.values()) {
+        html += `<div style="padding:6px 16px;background:#232428;border-bottom:1px solid #1e1f22;font-size:0.8125rem;font-weight:700;color:#b5bac1;">
+            ${escapeHtml(guild.name)} <span style="font-weight:400;color:#949ba4;">&mdash; ${guild.count} message${guild.count !== 1 ? "s" : ""}</span>
+        </div>`;
+        for (const ch of guild.channels.values()) {
+            html += `<div style="padding:8px 16px;background:#2b2d31;border-bottom:1px solid #1e1f22;">
+                <div style="font-size:0.9375rem;font-weight:600;color:#dbdee1;">#${escapeHtml(ch.name)}</div>
+                <div style="font-size:0.75rem;color:#949ba4;">${ch.messages.length} message${ch.messages.length !== 1 ? "s" : ""}</div>
+            </div>
+            <div style="padding:0 16px 8px;background:#313338;">`;
+            for (const msg of ch.messages) html += renderMessage(msg);
+            html += "</div>";
+        }
     }
 
     html += "</div>";

@@ -28,6 +28,8 @@ export interface ExportedMessage {
     id: string;
     channelId: string;
     channelName: string;
+    guildId: string;
+    guildName: string;
     content: string;
     timestamp: string;
     edited_timestamp: string | null;
@@ -43,11 +45,14 @@ export interface ExportedMemberData {
 }
 
 export interface ExportOptions {
+    /** The right-clicked server: source of the member list, job key, and file name. */
     guildId: string;
     guildName: string;
+    /** Servers to actually search each member's messages in (always includes the primary). */
+    searchGuilds: Array<{ id: string; name: string; }>;
     members: MemberInfo[];
     format: "html" | "json";
-    messageLimit: number | null; // per member, null = all (capped by the search offset limit)
+    messageLimit: number | null; // per member ACROSS all searchGuilds, null = all (capped by the search offset limit)
     combineFiles: boolean;
     includeAttachments: boolean;
     includeEmbeds: boolean;
@@ -134,25 +139,28 @@ function getRetryDelay(attempt: number): number {
     return delays[attempt] ?? 60000;
 }
 
-// Search a whole guild for one author's messages (no channel_id => all channels).
-async function fetchMemberMessages(
-    guildId: string,
+// Search a single guild for one author's messages (no channel_id => all channels)
+// and append them to `collected`. `primaryGuildId` keys the abort/early-finish
+// flags; `searchGuild` is the guild actually being searched.
+async function searchGuildForAuthor(
+    searchGuild: { id: string; name: string; },
+    primaryGuildId: string,
     userId: string,
     options: ExportOptions,
+    collected: ExportedMessage[],
     onPageProgress: (found: number) => void,
     signal: AbortSignal,
     rateLimitState: { total429s: number; },
-): Promise<ExportedMessage[]> {
-    const collected: ExportedMessage[] = [];
+): Promise<void> {
     const limit = options.messageLimit;
     let offset = 0;
     let total = Infinity;
     let successfulPages = 0;
 
     while (offset < total) {
-        if (signal.aborted || earlyFinishFlags.get(guildId)) return collected;
-        if (limit && collected.length >= limit) break;
-        if (offset > MAX_SEARCH_OFFSET) break;
+        if (signal.aborted || earlyFinishFlags.get(primaryGuildId)) return;
+        if (limit && collected.length >= limit) return;
+        if (offset > MAX_SEARCH_OFFSET) return;
 
         const query: Record<string, any> = {
             author_id: userId,
@@ -164,24 +172,25 @@ async function fetchMemberMessages(
         let succeeded = false;
 
         for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-            if (signal.aborted || earlyFinishFlags.get(guildId)) return collected;
+            if (signal.aborted || earlyFinishFlags.get(primaryGuildId)) return;
 
             try {
                 res = await RestAPI.get({
-                    url: `/guilds/${guildId}/messages/search`,
+                    url: `/guilds/${searchGuild.id}/messages/search`,
                     query,
                     retries: 0,
                 });
                 succeeded = true;
                 break;
             } catch (e: any) {
-                if (e?.status === 403 || e?.status === 404) return collected;
+                // 403/404 => not in this guild or no access; just skip this guild.
+                if (e?.status === 403 || e?.status === 404) return;
 
                 if (isRateLimitError(e)) {
                     rateLimitState.total429s++;
                     if (attempt >= MAX_RETRIES - 1) {
-                        console.log(`[ServerMemberExporter] Too many 429s for user ${userId}, skipping rest`);
-                        return collected;
+                        console.log(`[ServerMemberExporter] Too many 429s for user ${userId} in ${searchGuild.name}, skipping rest`);
+                        return;
                     }
                     const serverDelay = e?.body?.retry_after
                         ? Number(e.body.retry_after) * 1000
@@ -195,14 +204,14 @@ async function fetchMemberMessages(
                 }
 
                 if (attempt === MAX_RETRIES - 1) {
-                    console.log(`[ServerMemberExporter] Failed after ${MAX_RETRIES} retries for user ${userId}, skipping`);
-                    return collected;
+                    console.log(`[ServerMemberExporter] Failed after ${MAX_RETRIES} retries for user ${userId} in ${searchGuild.name}, skipping`);
+                    return;
                 }
                 await sleep(getRetryDelay(attempt));
             }
         }
 
-        if (!succeeded || !res) return collected;
+        if (!succeeded || !res) return;
         successfulPages++;
 
         const body = res?.body ?? {};
@@ -228,6 +237,8 @@ async function fetchMemberMessages(
                 id: msg.id,
                 channelId: msg.channel_id,
                 channelName: channel?.name ?? msg.channel_id,
+                guildId: searchGuild.id,
+                guildName: searchGuild.name,
                 content: msg.content ?? "",
                 timestamp: msg.timestamp,
                 edited_timestamp: msg.edited_timestamp,
@@ -253,7 +264,25 @@ async function fetchMemberMessages(
         const currentDelay = rateLimitState.total429s > RATE_LIMIT_THRESHOLD ? ELEVATED_DELAY : BASE_DELAY;
         await sleep(currentDelay);
     }
+}
 
+// Collect one member's messages across every selected server (merged, capped by
+// the per-member limit). Servers where the member isn't present just yield nothing.
+async function fetchMemberMessages(
+    searchGuilds: Array<{ id: string; name: string; }>,
+    primaryGuildId: string,
+    userId: string,
+    options: ExportOptions,
+    onPageProgress: (found: number) => void,
+    signal: AbortSignal,
+    rateLimitState: { total429s: number; },
+): Promise<ExportedMessage[]> {
+    const collected: ExportedMessage[] = [];
+    for (const guild of searchGuilds) {
+        if (signal.aborted || earlyFinishFlags.get(primaryGuildId)) break;
+        if (options.messageLimit && collected.length >= options.messageLimit) break;
+        await searchGuildForAuthor(guild, primaryGuildId, userId, options, collected, onPageProgress, signal, rateLimitState);
+    }
     return collected;
 }
 
@@ -321,6 +350,7 @@ export function startMemberExport(options: ExportOptions) {
                 let messages: ExportedMessage[] = [];
                 try {
                     messages = await fetchMemberMessages(
+                        options.searchGuilds,
                         options.guildId,
                         member.id,
                         options,

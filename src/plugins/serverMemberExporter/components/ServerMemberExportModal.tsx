@@ -20,6 +20,7 @@ import {
     Forms,
     GuildMemberStore,
     GuildRoleStore,
+    GuildStore,
     IconUtils,
     Select,
     Text,
@@ -84,6 +85,27 @@ function getGuildMembers(guildId: string): MemberInfo[] {
     return out;
 }
 
+interface GuildOption {
+    id: string;
+    name: string;
+}
+
+// All servers you're in, with the right-clicked (primary) server pinned first.
+function getAllGuilds(primaryGuildId: string): GuildOption[] {
+    const guilds = GuildStore.getGuilds();
+    const out: GuildOption[] = [];
+    for (const id in guilds) {
+        const g = guilds[id];
+        if (g) out.push({ id: g.id, name: g.name });
+    }
+    out.sort((a, b) => {
+        if (a.id === primaryGuildId) return -1;
+        if (b.id === primaryGuildId) return 1;
+        return a.name.localeCompare(b.name);
+    });
+    return out;
+}
+
 interface RoleOption {
     id: string;
     name: string;
@@ -110,10 +132,13 @@ export function ServerMemberExportModal({ modalProps, guildId, guildName }: Serv
     const members = useMemo(() => getGuildMembers(guildId), [guildId]);
 
     const roles = useMemo(() => getFilterableRoles(guildId, members), [guildId, members]);
+    const allGuilds = useMemo(() => getAllGuilds(guildId), [guildId]);
 
     const [selected, setSelected] = useState<Set<string>>(new Set());
     const [search, setSearch] = useState("");
     const [roleFilter, setRoleFilter] = useState<string | null>(null);
+    // Servers to search each member in; the primary (right-clicked) server is always included.
+    const [searchGuildIds, setSearchGuildIds] = useState<Set<string>>(() => new Set([guildId]));
 
     const [format, setFormat] = useState<"html" | "json">("html");
     const [messageLimit, setMessageLimit] = useState<number | null>(500);
@@ -165,12 +190,25 @@ export function ServerMemberExportModal({ modalProps, guildId, guildName }: Serv
         setSelected(new Set());
     }
 
+    function toggleSearchGuild(id: string) {
+        if (id === guildId) return; // primary server is always included
+        setSearchGuildIds(prev => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+        });
+    }
+
     function startExport() {
         if (selectedCount === 0) return;
         const chosen = members.filter(m => selected.has(m.id));
+        // Search the primary server first, then any extra servers (in the sorted order).
+        const searchGuilds = allGuilds.filter(g => searchGuildIds.has(g.id));
         const options: ExportOptions = {
             guildId,
             guildName,
+            searchGuilds,
             members: chosen,
             format,
             messageLimit,
@@ -319,6 +357,53 @@ export function ServerMemberExportModal({ modalProps, guildId, guildName }: Serv
                                     }}
                                 />
                             </div>
+                        </div>
+                    </Forms.FormSection>
+
+                    {/* Servers to search */}
+                    <Forms.FormSection style={{ marginTop: "16px" }}>
+                        <Forms.FormTitle>
+                            Servers to search ({searchGuildIds.size} selected)
+                        </Forms.FormTitle>
+                        <Text variant="text-xs/normal" style={{ color: "#949ba4", marginBottom: "6px" }}>
+                            Each selected member is searched in every server you tick here. The current server is always included.
+                        </Text>
+                        <div style={{
+                            maxHeight: "140px",
+                            overflowY: "auto",
+                            background: "#1e1f22",
+                            borderRadius: "4px",
+                            padding: "8px",
+                        }}>
+                            {allGuilds.map(g => {
+                                const isPrimary = g.id === guildId;
+                                return (
+                                    <div
+                                        key={g.id}
+                                        onClick={() => !isExporting && toggleSearchGuild(g.id)}
+                                        style={{
+                                            display: "flex",
+                                            alignItems: "center",
+                                            gap: "8px",
+                                            padding: "4px 8px",
+                                            borderRadius: "4px",
+                                            cursor: (isExporting || isPrimary) ? "default" : "pointer",
+                                        }}
+                                    >
+                                        <input
+                                            type="checkbox"
+                                            checked={searchGuildIds.has(g.id)}
+                                            onChange={() => toggleSearchGuild(g.id)}
+                                            disabled={isExporting || isPrimary}
+                                            style={{ width: "16px", height: "16px", accentColor: "#5865f2" }}
+                                        />
+                                        <span style={{ color: "#dbdee1" }}>
+                                            {g.name}
+                                            {isPrimary && <span style={{ color: "#949ba4", fontSize: "12px" }}> (current)</span>}
+                                        </span>
+                                    </div>
+                                );
+                            })}
                         </div>
                     </Forms.FormSection>
 
