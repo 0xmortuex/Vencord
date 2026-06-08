@@ -1,0 +1,49 @@
+.vc-chatexporter-modal {
+    min-width: 500px;
+}
+
+.vc-chatexporter-progress-bar {
+    width: 100%;
+    height: 8px;
+    background: #1e1f22;
+    border-radius: 4px;
+    overflow: hidden;
+    margin-top: 8px;
+}
+
+.vc-chatexporter-progress-fill {
+    height: 100%;
+    background: #5865f2;
+    border-radius: 4px;
+    transition: width 0.3s ease;
+}
+
+.vc-chatexporter-channel-list {
+    max-height: 400px;
+    overflow-y: auto;
+    margin: 8px 0;
+}
+
+.vc-chatexporter-channel-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.vc-chatexporter-channel-item:hover {
+    background: #35373c;
+}
+
+.vc-chatexporter-resume-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px;
+    margin-bottom: 16px;
+    border-radius: 6px;
+    background: #2b2d31;
+    border: 1px solid #5865f2;
+}
