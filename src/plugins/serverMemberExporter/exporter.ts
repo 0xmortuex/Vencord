@@ -121,13 +121,39 @@ export function isEarlyFinishRequested(guildId: string): boolean {
 // only fall back to the conservative one if the route actually rate-limits us -
 // this is ~3x faster than a fixed 3500ms while still self-correcting on 429s.
 const SEARCH_PAGE_SIZE = 25;
-const BASE_DELAY = 1200; // optimistic per-page delay
+const FAST_DELAY = 350; // floor between pages while the rate-limit bucket still has room
+const BASE_DELAY = 1200; // used only when the response exposes no rate-limit headers
 const ELEVATED_DELAY = 3500; // safe fallback once 429s appear
-const COOLDOWN_INTERVAL = 20; // pages between cooldowns
-const COOLDOWN_DURATION = 4000;
+const COOLDOWN_INTERVAL = 40; // pages between safety cooldowns (header pacing usually handles it)
+const COOLDOWN_DURATION = 3000;
 const MAX_RETRIES = 5;
 const MAX_SEARCH_OFFSET = 2000;
 const RATE_LIMIT_THRESHOLD = 2; // switch to ELEVATED_DELAY after this many cumulative 429s
+
+// Discord's REST responses may surface headers as a Headers object (.get) or a
+// plain lowercased map, depending on the path. Read both shapes defensively.
+function readHeader(headers: any, name: string): string | undefined {
+    if (!headers) return undefined;
+    if (typeof headers.get === "function") return headers.get(name) ?? undefined;
+    return headers[name] ?? headers[name.toLowerCase()] ?? undefined;
+}
+
+// Pace from Discord's own bucket headers: burst while requests remain, then wait
+// exactly until the bucket resets. Falls back to a fixed delay if headers are
+// absent, and to the safe elevated delay once we've been 429'd a few times.
+function nextDelay(res: any, total429s: number): number {
+    if (total429s >= RATE_LIMIT_THRESHOLD) return ELEVATED_DELAY;
+
+    const remainingRaw = readHeader(res?.headers, "x-ratelimit-remaining");
+    if (remainingRaw == null) return BASE_DELAY;
+
+    const remaining = Number(remainingRaw);
+    if (remaining > 0) return FAST_DELAY;
+
+    const resetRaw = readHeader(res?.headers, "x-ratelimit-reset-after");
+    const resetMs = resetRaw != null ? Number(resetRaw) * 1000 : BASE_DELAY;
+    return Math.max(FAST_DELAY, resetMs + 100);
+}
 
 // Discord snowflakes encode a timestamp, so a date range can be pushed to the
 // server as min_id/max_id instead of scanning and discarding out-of-range pages.
@@ -228,6 +254,14 @@ async function searchGuildForAuthor(
         if (!succeeded || !res) return;
         successfulPages++;
 
+        // One-time diagnostic per search so we can confirm header-based pacing is
+        // active (remaining/resetAfter present) vs falling back to the fixed delay.
+        if (successfulPages === 1) {
+            const rem = readHeader(res.headers, "x-ratelimit-remaining");
+            const reset = readHeader(res.headers, "x-ratelimit-reset-after");
+            console.log(`[ServerMemberExporter] ${searchGuild.name}: ratelimit remaining=${rem ?? "n/a"} resetAfter=${reset ?? "n/a"}`);
+        }
+
         const body = res?.body ?? {};
         total = typeof body.total_results === "number" ? body.total_results : 0;
         const hits: any[][] = body.messages ?? [];
@@ -276,8 +310,7 @@ async function searchGuildForAuthor(
             await sleep(COOLDOWN_DURATION);
         }
 
-        const currentDelay = rateLimitState.total429s >= RATE_LIMIT_THRESHOLD ? ELEVATED_DELAY : BASE_DELAY;
-        await sleep(currentDelay);
+        await sleep(nextDelay(res, rateLimitState.total429s));
     }
 }
 
