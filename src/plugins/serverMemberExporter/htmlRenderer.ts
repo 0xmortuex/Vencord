@@ -172,6 +172,7 @@ function renderMemberSection(data: ExportedMemberData): string {
             <div>
                 <div style="font-size:1.125rem;font-weight:700;color:#f2f3f5;">${escapeHtml(name)}</div>
                 <div style="font-size:0.75rem;color:#949ba4;margin-top:2px;">@${escapeHtml(member.username)} &mdash; ${messages.length} message${messages.length !== 1 ? "s" : ""} across ${byChannel.size} channel${byChannel.size !== 1 ? "s" : ""}</div>
+                ${member.topRoleName ? `<div style="font-size:0.75rem;margin-top:2px;color:${member.topRoleColor ? `#${member.topRoleColor.toString(16).padStart(6, "0")}` : "#949ba4"};">${escapeHtml(member.topRoleName)}</div>` : ""}
             </div>
         </div>`;
 

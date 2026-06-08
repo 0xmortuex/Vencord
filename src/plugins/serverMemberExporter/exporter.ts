@@ -18,6 +18,10 @@ export interface MemberInfo {
     /** Pre-resolved avatar URL (via IconUtils) so the renderer never builds CDN URLs by hand. */
     avatarUrl: string;
     nick: string | null;
+    /** Role IDs this member holds (excluding @everyone), used for the role filter. */
+    roles: string[];
+    topRoleName: string | null;
+    topRoleColor: number | null;
 }
 
 export interface ExportedMessage {
@@ -417,6 +421,7 @@ function buildJson(options: ExportOptions, members: ExportedMemberData[]) {
             username: m.member.username,
             globalName: m.member.globalName,
             nick: m.member.nick,
+            topRole: m.member.topRoleName,
             messageCount: m.messages.length,
             messages: m.messages,
         })),

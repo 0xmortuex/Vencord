@@ -19,7 +19,9 @@ import {
     Button,
     Forms,
     GuildMemberStore,
+    GuildRoleStore,
     IconUtils,
+    Select,
     Text,
     TextInput,
     useEffect,
@@ -38,6 +40,24 @@ function memberDisplayName(m: MemberInfo): string {
     return m.nick || m.globalName || m.username;
 }
 
+function roleColorHex(color: number | null): string | undefined {
+    return color ? `#${color.toString(16).padStart(6, "0")}` : undefined;
+}
+
+// Resolve a member's highest-positioned role (ignoring @everyone, which every
+// member has and whose id equals the guild id).
+function getTopRole(guildId: string, roleIds: string[]): { name: string | null; color: number | null; } {
+    let best: { name: string | null; color: number | null; position: number; } = { name: null, color: null, position: -1 };
+    for (const roleId of roleIds) {
+        if (roleId === guildId) continue;
+        const role = GuildRoleStore.getRole(guildId, roleId);
+        if (role && role.position > best.position) {
+            best = { name: role.name, color: role.color || null, position: role.position };
+        }
+    }
+    return { name: best.name, color: best.color };
+}
+
 function getGuildMembers(guildId: string): MemberInfo[] {
     const ids = GuildMemberStore.getMemberIds(guildId);
     const out: MemberInfo[] = [];
@@ -46,12 +66,17 @@ function getGuildMembers(guildId: string): MemberInfo[] {
         const user = UserStore.getUser(id);
         if (!user) continue;
         const member = GuildMemberStore.getMember(guildId, id);
+        const roles = (member?.roles ?? []).filter(r => r !== guildId);
+        const topRole = getTopRole(guildId, roles);
         out.push({
             id,
             username: user.username,
             globalName: (user as any).globalName ?? null,
             avatarUrl: IconUtils.getUserAvatarURL(user, true),
             nick: member?.nick ?? null,
+            roles,
+            topRoleName: topRole.name,
+            topRoleColor: topRole.color,
         });
     }
 
@@ -59,11 +84,36 @@ function getGuildMembers(guildId: string): MemberInfo[] {
     return out;
 }
 
+interface RoleOption {
+    id: string;
+    name: string;
+    color: number | null;
+}
+
+// Roles that at least one loaded member actually holds, sorted highest-first, so
+// the filter only lists roles you can meaningfully pick from.
+function getFilterableRoles(guildId: string, members: MemberInfo[]): RoleOption[] {
+    const present = new Set<string>();
+    for (const m of members) for (const r of m.roles) present.add(r);
+
+    const roles: Array<RoleOption & { position: number; }> = [];
+    for (const roleId of present) {
+        const role = GuildRoleStore.getRole(guildId, roleId);
+        if (!role) continue;
+        roles.push({ id: roleId, name: role.name, color: role.color || null, position: role.position });
+    }
+    roles.sort((a, b) => b.position - a.position);
+    return roles.map(({ id, name, color }) => ({ id, name, color }));
+}
+
 export function ServerMemberExportModal({ modalProps, guildId, guildName }: ServerMemberExportModalProps) {
     const members = useMemo(() => getGuildMembers(guildId), [guildId]);
 
+    const roles = useMemo(() => getFilterableRoles(guildId, members), [guildId, members]);
+
     const [selected, setSelected] = useState<Set<string>>(new Set());
     const [search, setSearch] = useState("");
+    const [roleFilter, setRoleFilter] = useState<string | null>(null);
 
     const [format, setFormat] = useState<"html" | "json">("html");
     const [messageLimit, setMessageLimit] = useState<number | null>(500);
@@ -84,12 +134,13 @@ export function ServerMemberExportModal({ modalProps, guildId, guildName }: Serv
 
     const filtered = useMemo(() => {
         const q = search.trim().toLowerCase();
-        if (!q) return members;
-        return members.filter(m =>
-            memberDisplayName(m).toLowerCase().includes(q) ||
-            m.username.toLowerCase().includes(q)
-        );
-    }, [members, search]);
+        return members.filter(m => {
+            if (roleFilter && !m.roles.includes(roleFilter)) return false;
+            if (!q) return true;
+            return memberDisplayName(m).toLowerCase().includes(q) ||
+                m.username.toLowerCase().includes(q);
+        });
+    }, [members, search, roleFilter]);
 
     const selectedCount = selected.size;
 
@@ -146,6 +197,11 @@ export function ServerMemberExportModal({ modalProps, guildId, guildName }: Serv
         { label: "Last 500", value: 500 },
         { label: "Last 1,000", value: 1000 },
         { label: "All", value: null },
+    ];
+
+    const roleOptions: Array<{ label: string; value: string | null; }> = [
+        { label: "All roles", value: null },
+        ...roles.map(r => ({ label: r.name, value: r.id as string | null })),
     ];
 
     return (
@@ -274,7 +330,7 @@ export function ServerMemberExportModal({ modalProps, guildId, guildName }: Serv
                             </Forms.FormTitle>
                             <div style={{ display: "flex", gap: "8px" }}>
                                 <Button size={Button.Sizes.TINY} look={Button.Looks.LINK} onClick={selectAllFiltered} disabled={isExporting}>
-                                    Select All{search ? " Shown" : ""}
+                                    Select All{(search || roleFilter) ? " Shown" : ""}
                                 </Button>
                                 <Button size={Button.Sizes.TINY} look={Button.Looks.LINK} onClick={deselectAll} disabled={isExporting}>
                                     Deselect All
@@ -282,13 +338,26 @@ export function ServerMemberExportModal({ modalProps, guildId, guildName }: Serv
                             </div>
                         </div>
 
-                        <div style={{ margin: "8px 0" }}>
-                            <TextInput
-                                value={search}
-                                onChange={setSearch}
-                                placeholder="Search members by name..."
-                                disabled={isExporting}
-                            />
+                        <div style={{ display: "flex", gap: "8px", margin: "8px 0", alignItems: "center" }}>
+                            <div style={{ flex: 1 }}>
+                                <TextInput
+                                    value={search}
+                                    onChange={setSearch}
+                                    placeholder="Search members by name..."
+                                    disabled={isExporting}
+                                />
+                            </div>
+                            {roles.length > 0 && (
+                                <div style={{ minWidth: "200px" }}>
+                                    <Select
+                                        options={roleOptions}
+                                        isSelected={v => v === roleFilter}
+                                        select={(v: string | null) => setRoleFilter(v)}
+                                        serialize={v => String(v)}
+                                        closeOnSelect={true}
+                                    />
+                                </div>
+                            )}
                         </div>
 
                         {members.length === 0 ? (
@@ -325,15 +394,32 @@ export function ServerMemberExportModal({ modalProps, guildId, guildName }: Serv
                                                 style={{ width: "16px", height: "16px", accentColor: "#5865f2" }}
                                             />
                                             <img src={m.avatarUrl} alt="" style={{ width: "24px", height: "24px", borderRadius: "50%" }} />
-                                            <span style={{ color: "#dbdee1" }}>
+                                            <span style={{ color: "#dbdee1", flex: 1 }}>
                                                 {memberDisplayName(m)}
                                                 <span style={{ color: "#949ba4", fontSize: "12px" }}> @{m.username}</span>
                                             </span>
+                                            {m.topRoleName && (
+                                                <span style={{
+                                                    display: "inline-flex",
+                                                    alignItems: "center",
+                                                    gap: "4px",
+                                                    fontSize: "12px",
+                                                    color: roleColorHex(m.topRoleColor) ?? "#949ba4",
+                                                }}>
+                                                    <span style={{
+                                                        width: "8px",
+                                                        height: "8px",
+                                                        borderRadius: "50%",
+                                                        background: roleColorHex(m.topRoleColor) ?? "#949ba4",
+                                                    }} />
+                                                    {m.topRoleName}
+                                                </span>
+                                            )}
                                         </div>
                                     ))}
                                     {filtered.length === 0 && (
                                         <div style={{ padding: "12px", color: "#949ba4", textAlign: "center" }}>
-                                            No members match "{search}".
+                                            No members match the current filters.
                                         </div>
                                     )}
                                 </div>
