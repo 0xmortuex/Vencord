@@ -12,6 +12,8 @@ import {
     loadCheckpoint,
     saveCheckpoint,
 } from "@plugins/chatExporter/checkpoint";
+import { saveFile } from "@utils/web";
+import type { Embed, MessageAttachment, MessageReaction } from "@vencord/discord-types";
 import { RestAPI, showToast, Toasts } from "@webpack/common";
 
 import { renderHtml } from "./htmlRenderer";
@@ -29,9 +31,9 @@ export interface ExportedMessage {
     };
     timestamp: string;
     edited_timestamp: string | null;
-    attachments: any[];
-    embeds: any[];
-    reactions: any[];
+    attachments: MessageAttachment[];
+    embeds: Embed[];
+    reactions: MessageReaction[];
     type: number;
 }
 
@@ -109,6 +111,7 @@ export function cancelUserJob(userId: string) {
 }
 
 export function earlyFinishJob(userId: string) {
+    if (!jobs.has(userId)) return;
     earlyFinishFlags.set(userId, true);
     notify();
 }
@@ -118,18 +121,75 @@ export function saveUserProgress(userId: string) {
     jobs.get(userId)?.saveProgress?.();
 }
 
-function delay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+// Abort-aware sleep: resolves immediately when the export is cancelled so a
+// pending cooldown/backoff never keeps a dead job running for seconds.
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+    return new Promise(resolve => {
+        if (signal.aborted) return resolve();
+        const timer = setTimeout(finish, ms);
+        function finish() {
+            signal.removeEventListener("abort", finish);
+            clearTimeout(timer);
+            resolve();
+        }
+        signal.addEventListener("abort", finish);
+    });
 }
 
+// Rate-limit tuning for the guild search API, mirroring ServerMemberExporter:
+// burst while Discord's bucket headers say there's room, wait out the bucket
+// reset when there isn't, and fall back to a conservative fixed delay once
+// real 429s start appearing.
 const SEARCH_PAGE_SIZE = 25;
-const BASE_DELAY = 3500;
-const ELEVATED_DELAY = 5000;
-const COOLDOWN_INTERVAL = 10;
-const COOLDOWN_DURATION = 10000;
+const FAST_DELAY = 350; // floor between pages while the rate-limit bucket still has room
+const BASE_DELAY = 1200; // used only when the response exposes no rate-limit headers
+const ELEVATED_DELAY = 3500; // safe fallback once 429s appear
+const COOLDOWN_INTERVAL = 40; // pages between safety cooldowns (header pacing usually handles it)
+const COOLDOWN_DURATION = 3000;
 const MAX_RETRIES = 5;
 const MAX_SEARCH_OFFSET = 2000;
-const RATE_LIMIT_THRESHOLD = 10;
+const RATE_LIMIT_THRESHOLD = 2; // switch to ELEVATED_DELAY after this many cumulative 429s
+
+// Discord's REST responses may surface headers as a Headers object (.get) or a
+// plain lowercased map, depending on the path. Read both shapes defensively.
+function readHeader(headers: any, name: string): string | undefined {
+    if (!headers) return undefined;
+    if (typeof headers.get === "function") return headers.get(name) ?? undefined;
+    return headers[name] ?? headers[name.toLowerCase()] ?? undefined;
+}
+
+// Pace from Discord's own bucket headers: burst while requests remain, then wait
+// exactly until the bucket resets. Falls back to a fixed delay if headers are
+// absent, and to the safe elevated delay once we've been 429'd a few times.
+function nextDelay(res: any, total429s: number): number {
+    if (total429s >= RATE_LIMIT_THRESHOLD) return ELEVATED_DELAY;
+
+    const remainingRaw = readHeader(res?.headers, "x-ratelimit-remaining");
+    if (remainingRaw == null) return BASE_DELAY;
+
+    const remaining = Number(remainingRaw);
+    if (remaining > 0) return FAST_DELAY;
+
+    const resetRaw = readHeader(res?.headers, "x-ratelimit-reset-after");
+    const resetMs = resetRaw != null ? Number(resetRaw) * 1000 : BASE_DELAY;
+    return Math.max(FAST_DELAY, resetMs + 100);
+}
+
+// Discord snowflakes encode a timestamp, so a date range can be pushed to the
+// server as min_id/max_id instead of scanning and discarding out-of-range pages.
+const DISCORD_EPOCH = 1420070400000;
+function dateToSnowflake(date: Date): string {
+    return (BigInt(Math.max(0, date.getTime() - DISCORD_EPOCH)) << 22n).toString();
+}
+
+// Date inputs are plain YYYY-MM-DD strings that parse to midnight UTC. The end
+// bound must therefore be the start of the NEXT day (exclusive), otherwise every
+// message sent during the selected end date gets dropped.
+function endDateBound(dateStr: string): Date {
+    const d = new Date(dateStr);
+    d.setUTCDate(d.getUTCDate() + 1);
+    return d;
+}
 
 function isRateLimitError(e: any): boolean {
     if (e?.status === 429) return true;
@@ -158,6 +218,9 @@ async function fetchChannelMessages(
     let total = Infinity;
     let successfulPages = 0;
 
+    const startBound = options.startDate ? new Date(options.startDate) : null;
+    const endBound = options.endDate ? endDateBound(options.endDate) : null;
+
     while (offset < total) {
         if (signal.aborted || earlyFinishFlags.get(userId)) return collected;
         if (limit && collected.length >= limit) break;
@@ -169,6 +232,10 @@ async function fetchChannelMessages(
             offset,
             include_nsfw: true,
         };
+        // Bound the search by date server-side so we don't page through (and then
+        // discard) messages outside the requested range.
+        if (startBound) query.min_id = dateToSnowflake(startBound);
+        if (endBound) query.max_id = dateToSnowflake(endBound);
 
         let res: any = null;
         let succeeded = false;
@@ -196,15 +263,16 @@ async function fetchChannelMessages(
                         return collected;
                     }
 
+                    const retryAfterHeader = readHeader(e?.headers, "retry-after");
                     const serverDelay = e?.body?.retry_after
                         ? Number(e.body.retry_after) * 1000
-                        : e?.headers?.["retry-after"]
-                            ? Number(e.headers["retry-after"]) * 1000
+                        : retryAfterHeader
+                            ? Number(retryAfterHeader) * 1000
                             : 0;
                     const backoff = Math.max(serverDelay, getRetryDelay(attempt));
                     const waitSec = Math.round(backoff / 1000);
                     console.log(`UserExporter: Rate limited, waiting ${waitSec}s before retry (attempt ${attempt + 1}/${MAX_RETRIES})`);
-                    await delay(backoff);
+                    await pause(backoff, signal);
                     continue;
                 }
 
@@ -216,7 +284,7 @@ async function fetchChannelMessages(
                 const backoff = getRetryDelay(attempt);
                 const waitSec = Math.round(backoff / 1000);
                 console.log(`UserExporter: Request error, waiting ${waitSec}s before retry (attempt ${attempt + 1}/${MAX_RETRIES})`);
-                await delay(backoff);
+                await pause(backoff, signal);
             }
         }
 
@@ -234,13 +302,10 @@ async function fetchChannelMessages(
             const msg = Array.isArray(hit) ? hit[0] : hit;
             if (!msg) continue;
 
-            if (options.startDate) {
+            if (startBound || endBound) {
                 const msgDate = new Date(msg.timestamp);
-                if (msgDate < new Date(options.startDate)) continue;
-            }
-            if (options.endDate) {
-                const msgDate = new Date(msg.timestamp);
-                if (msgDate > new Date(options.endDate)) continue;
+                if (startBound && msgDate < startBound) continue;
+                if (endBound && msgDate >= endBound) continue;
             }
 
             collected.push({
@@ -268,17 +333,15 @@ async function fetchChannelMessages(
         onPageProgress(collected.length);
 
         offset += SEARCH_PAGE_SIZE;
+        // Stop without a trailing delay once we've hit the limit or run out.
         if (offset >= total) break;
+        if (limit && collected.length >= limit) break;
 
-        // Cooldown every 10 pages
         if (successfulPages % COOLDOWN_INTERVAL === 0) {
-            console.log("UserExporter: Cooling down for 10s after 250 messages...");
-            await delay(COOLDOWN_DURATION);
+            await pause(COOLDOWN_DURATION, signal);
         }
 
-        // Use elevated delay if too many 429s have accumulated
-        const currentDelay = rateLimitState.total429s > RATE_LIMIT_THRESHOLD ? ELEVATED_DELAY : BASE_DELAY;
-        await delay(currentDelay);
+        await pause(nextDelay(res, rateLimitState.total429s), signal);
     }
 
     return collected;
@@ -290,18 +353,6 @@ export interface ExportedChannelData {
     guildId: string;
     guildName: string;
     messages: ExportedMessage[];
-}
-
-export function downloadFile(content: string, filename: string, mimeType: string) {
-    const blob = new Blob([content], { type: mimeType });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
 }
 
 export function startUserExport(options: ExportOptions, resumeFromCheckpoint = false) {
@@ -520,10 +571,10 @@ export function startUserExport(options: ExportOptions, resumeFromCheckpoint = f
                         })),
                     })),
                 };
-                downloadFile(JSON.stringify(json, null, 2), filename + ".json", "application/json");
+                saveFile(new File([JSON.stringify(json, null, 2)], filename + ".json", { type: "application/json" }));
             } else {
                 const html = renderHtml(options.user, results, totalMessages, guildCount);
-                downloadFile(html, filename + ".html", "text/html");
+                saveFile(new File([html], filename + ".html", { type: "text/html" }));
             }
 
             // A full run consumed every requested channel and the combined file is

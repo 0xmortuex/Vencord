@@ -9,7 +9,7 @@ import ErrorBoundary from "@components/ErrorBoundary";
 import { Devs } from "@utils/constants";
 import { getCurrentGuild } from "@utils/discord";
 import definePlugin from "@utils/types";
-import { GuildRoleStore, Menu, SelectedGuildStore } from "@webpack/common";
+import { GuildRoleStore, Menu, SelectedGuildStore, useEffect, useRef } from "@webpack/common";
 
 import openAllRolesModal from "./components/AllRolesModal";
 import openRoleMembersModal from "./components/RoleMembersModal";
@@ -68,48 +68,52 @@ export default definePlugin({
         }
     ],
 
-    RolePillClickWrapper: ErrorBoundary.wrap(({ guild }: { guild: { id: string; }; }) => {
-        if (!guild?.id) return null;
+    // There is no patchable onClick on the role pill container itself, so a
+    // hidden marker attaches a capturing listener to its parent. The listener is
+    // scoped with useEffect cleanup (no dedupe flags on DOM nodes), and guildId
+    // is read through a ref at click time so a recycled row never opens the
+    // modal for a stale guild.
+    RolePillClickWrapper: ErrorBoundary.wrap(({ guild }: { guild: { id: string; } | undefined; }) => {
+        const guildIdRef = useRef(guild?.id);
+        guildIdRef.current = guild?.id;
+        const markerRef = useRef<HTMLSpanElement | null>(null);
 
-        const onClick = (e: React.MouseEvent<HTMLElement>) => {
-            if (e.button !== 0 || e.ctrlKey || e.shiftKey || e.metaKey || e.altKey) return;
+        useEffect(() => {
+            const parent = markerRef.current?.parentElement;
+            if (!parent) return;
 
-            let el = e.target as HTMLElement | null;
-            while (el && el !== e.currentTarget) {
-                const itemId = el.getAttribute("data-list-item-id");
-                if (itemId?.startsWith("roles-")) {
-                    const roleId = itemId.slice("roles-".length);
-                    if (roleId) {
-                        openRoleMembersModal(guild.id, roleId);
-                        return;
+            const onClick = (e: MouseEvent) => {
+                if (e.button !== 0 || e.ctrlKey || e.shiftKey || e.metaKey || e.altKey) return;
+                const guildId = guildIdRef.current;
+                if (!guildId) return;
+
+                let el = e.target as HTMLElement | null;
+                while (el && el !== parent) {
+                    const itemId = el.getAttribute("data-list-item-id");
+                    if (itemId?.startsWith("roles-")) {
+                        const roleId = itemId.slice("roles-".length);
+                        if (roleId) {
+                            openRoleMembersModal(guildId, roleId);
+                            return;
+                        }
                     }
+                    el = el.parentElement;
                 }
-                el = el.parentElement;
-            }
-        };
+            };
 
-        return (
-            <span
-                style={{ display: "none" }}
-                ref={el => {
-                    const parent = el?.parentElement;
-                    if (!parent) return;
+            parent.addEventListener("click", onClick, true);
+            return () => parent.removeEventListener("click", onClick, true);
+        }, []);
 
-                    if ((parent as any).__vcRoleMembersHandler) return;
-                    (parent as any).__vcRoleMembersHandler = true;
-
-                    parent.addEventListener("click", onClick as any, true);
-                    }}
-            />
-        );
+        return <span style={{ display: "none" }} ref={markerRef} />;
     }, { noop: true }),
 
     onSettingsRoleClick(props: any) {
-    const roleId = props?.role?.id;
-    const guildId = SelectedGuildStore.getGuildId();
-    if (!roleId || !guildId) return;
-    openRoleMembersModal(guildId, roleId);
-},
+        const roleId = props?.role?.id;
+        const guildId = SelectedGuildStore.getGuildId();
+        if (!roleId || !guildId) return;
+        openRoleMembersModal(guildId, roleId);
+    },
 
     contextMenus: {
         "dev-context": devContextMenuPatch,

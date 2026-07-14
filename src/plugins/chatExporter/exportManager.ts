@@ -16,7 +16,7 @@ import {
     loadCheckpoint,
     saveCheckpoint,
 } from "./checkpoint";
-import { downloadFile, ExportOptions, ExportProgress, fetchMessages } from "./exporter";
+import { ExportOptions, ExportProgress, fetchMessages } from "./exporter";
 import { renderHtml } from "./htmlRenderer";
 
 export interface ExportJob {
@@ -185,10 +185,10 @@ export function startChannelExport(
             const filename = `${safeName}-${date}`;
 
             if (options.format === "json") {
-                downloadFile(JSON.stringify(messages, null, 2), filename + ".json", "application/json");
+                saveFile(new File([JSON.stringify(messages, null, 2)], filename + ".json", { type: "application/json" }));
             } else {
                 const html = renderHtml(messages, channelName, serverName);
-                downloadFile(html, filename + ".html", "text/html");
+                saveFile(new File([html], filename + ".html", { type: "text/html" }));
             }
 
             // Export finished and the file is on disk - no reason to keep the checkpoint.
@@ -227,6 +227,8 @@ interface ServerExportParams {
     format: "html" | "json";
     messageLimit: number | null;
     combineFiles: boolean;
+    /** Only export messages newer than this (ISO date/time). Used by AutoExport's incremental runs. */
+    startDate?: string | null;
     resumeFromCheckpoint?: boolean;
 }
 
@@ -240,14 +242,15 @@ export function startServerExport(params: ServerExportParams) {
     // state of the modal's form).
     const checkpoint = params.resumeFromCheckpoint ? loadCheckpoint(jobId) : null;
 
-    const guildId = params.guildId;
-    const guildName = params.guildName;
+    const { guildId } = params;
+    const { guildName } = params;
     const channels: Array<{ id: string; name: string; }> = checkpoint
         ? checkpoint.channelsRequested.map(c => ({ id: c.id, name: c.name }))
         : params.channels;
     const format = checkpoint ? checkpoint.format : params.format;
     const messageLimit = checkpoint ? checkpoint.messageLimit : params.messageLimit;
     const combineFiles = checkpoint ? checkpoint.combineFiles : params.combineFiles;
+    const startDate = checkpoint ? checkpoint.startDate : (params.startDate ?? null);
 
     // Checkpoints only make sense when each channel is saved to disk as it
     // finishes. With combineFiles the messages are held in memory and written in
@@ -280,6 +283,7 @@ export function startServerExport(params: ServerExportParams) {
         // their `messages` is set to null so GC can reclaim the memory.
         const allExports: Array<{ channelName: string; messages: any[] | null; }> = [];
         const channelsCompleted: string[] = [...completedSet];
+        const failedChannels: string[] = [];
         let totalMessageCount = checkpoint ? checkpoint.totalMessagesProcessed : 0;
         const CONCURRENCY = 3;
         let earlyFinished = false;
@@ -298,7 +302,7 @@ export function startServerExport(params: ServerExportParams) {
                 format,
                 messageLimit,
                 combineFiles,
-                startDate: null,
+                startDate,
                 endDate: null,
                 channelsRequested,
                 channelsCompleted,
@@ -352,7 +356,7 @@ export function startServerExport(params: ServerExportParams) {
                         includeEmbeds: true,
                         includeReactions: true,
                         includePins: true,
-                        startDate: null,
+                        startDate,
                         endDate: null,
                     };
                     return fetchMessages(
@@ -369,8 +373,17 @@ export function startServerExport(params: ServerExportParams) {
                 })
             );
 
-            for (const result of results) {
-                if (result.status !== "fulfilled") continue;
+            for (let j = 0; j < results.length; j++) {
+                const result = results[j];
+                if (result.status !== "fulfilled") {
+                    // Surface failures (403s, persistent API errors) instead of
+                    // silently exporting an incomplete server.
+                    const ch = batch[j];
+                    console.error(`[ChatExporter] Failed to fetch #${ch.name}:`, result.reason);
+                    showToast(`Failed to export #${ch.name}: ${(result.reason as any)?.message ?? "unknown error"}`, Toasts.Type.FAILURE);
+                    failedChannels.push(ch.name);
+                    continue;
+                }
                 const exp = result.value;
                 totalMessageCount += exp.messages.length;
 
@@ -434,15 +447,14 @@ export function startServerExport(params: ServerExportParams) {
                         for (const exp of allExports) {
                             if (exp.messages) combined[exp.channelName] = exp.messages;
                         }
-                        downloadFile(JSON.stringify(combined, null, 2), `${safeName}-${date}.json`, "application/json");
+                        saveFile(new File([JSON.stringify(combined, null, 2)], `${safeName}-${date}.json`, { type: "application/json" }));
                     } else {
-                        let combinedHtml = "";
+                        const parts: string[] = [];
                         for (const exp of allExports) {
                             if (!exp.messages) continue;
-                            combinedHtml += renderHtml(exp.messages, exp.channelName, guildName);
-                            combinedHtml += "\n\n";
+                            parts.push(renderHtml(exp.messages, exp.channelName, guildName));
                         }
-                        downloadFile(combinedHtml, `${safeName}-${date}.html`, "text/html");
+                        saveFile(new File([parts.join("\n\n")], `${safeName}-${date}.html`, { type: "text/html" }));
                     }
                     // Free memory only after the combined file has been handed off
                     for (const exp of allExports) exp.messages = null;
@@ -482,8 +494,12 @@ export function startServerExport(params: ServerExportParams) {
         notify();
         const completionLabel = earlyFinished
             ? `(stopped early, ${job.channelsDone}/${channels.length} channels)`
-            : `(${channels.length} channels)`;
-        showToast(`Server export of ${guildName} complete ${completionLabel}`, Toasts.Type.SUCCESS);
+            : `(${channels.length - failedChannels.length}/${channels.length} channels)`;
+        showToast(
+            `Server export of ${guildName} complete ${completionLabel}` +
+            (failedChannels.length ? ` — ${failedChannels.length} failed: ${failedChannels.join(", ")}` : ""),
+            failedChannels.length ? Toasts.Type.MESSAGE : Toasts.Type.SUCCESS,
+        );
 
         setTimeout(() => {
             if (job.progress.status === "done" || job.progress.status === "error") {

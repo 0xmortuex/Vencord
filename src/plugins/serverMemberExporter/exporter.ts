@@ -4,7 +4,6 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { sleep } from "@utils/misc";
 import { saveFile } from "@utils/web";
 import type { Embed, MessageAttachment, MessageReaction } from "@vencord/discord-types";
 import { ChannelStore, RestAPI, showToast, Toasts } from "@webpack/common";
@@ -158,9 +157,32 @@ function nextDelay(res: any, total429s: number): number {
 // Discord snowflakes encode a timestamp, so a date range can be pushed to the
 // server as min_id/max_id instead of scanning and discarding out-of-range pages.
 const DISCORD_EPOCH = 1420070400000;
-function dateToSnowflake(dateStr: string): string {
-    const ms = new Date(dateStr).getTime();
-    return (BigInt(Math.max(0, ms - DISCORD_EPOCH)) << 22n).toString();
+function dateToSnowflake(date: Date): string {
+    return (BigInt(Math.max(0, date.getTime() - DISCORD_EPOCH)) << 22n).toString();
+}
+
+// Date inputs are plain YYYY-MM-DD strings that parse to midnight UTC. The end
+// bound must therefore be the start of the NEXT day (exclusive), otherwise every
+// message sent during the selected end date gets dropped.
+function endDateBound(dateStr: string): Date {
+    const d = new Date(dateStr);
+    d.setUTCDate(d.getUTCDate() + 1);
+    return d;
+}
+
+// Abort-aware sleep: resolves immediately when the export is cancelled so a
+// pending cooldown/backoff never keeps a dead job running for seconds.
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+    return new Promise(resolve => {
+        if (signal.aborted) return resolve();
+        const timer = setTimeout(finish, ms);
+        function finish() {
+            signal.removeEventListener("abort", finish);
+            clearTimeout(timer);
+            resolve();
+        }
+        signal.addEventListener("abort", finish);
+    });
 }
 
 function isRateLimitError(e: any): boolean {
@@ -193,6 +215,9 @@ async function searchGuildForAuthor(
     let total = Infinity;
     let successfulPages = 0;
 
+    const startBound = options.startDate ? new Date(options.startDate) : null;
+    const endBound = options.endDate ? endDateBound(options.endDate) : null;
+
     while (offset < total) {
         if (signal.aborted || earlyFinishFlags.get(primaryGuildId)) return;
         if (limit && collected.length >= limit) return;
@@ -205,8 +230,8 @@ async function searchGuildForAuthor(
         };
         // Bound the search by date server-side so we don't page through (and then
         // discard) messages outside the requested range.
-        if (options.startDate) query.min_id = dateToSnowflake(options.startDate);
-        if (options.endDate) query.max_id = dateToSnowflake(options.endDate);
+        if (startBound) query.min_id = dateToSnowflake(startBound);
+        if (endBound) query.max_id = dateToSnowflake(endBound);
 
         let res: any = null;
         let succeeded = false;
@@ -232,14 +257,15 @@ async function searchGuildForAuthor(
                         console.log(`[ServerMemberExporter] Too many 429s for user ${userId} in ${searchGuild.name}, skipping rest`);
                         return;
                     }
+                    const retryAfterHeader = readHeader(e?.headers, "retry-after");
                     const serverDelay = e?.body?.retry_after
                         ? Number(e.body.retry_after) * 1000
-                        : e?.headers?.["retry-after"]
-                            ? Number(e.headers["retry-after"]) * 1000
+                        : retryAfterHeader
+                            ? Number(retryAfterHeader) * 1000
                             : 0;
                     const backoff = Math.max(serverDelay, getRetryDelay(attempt));
                     console.log(`[ServerMemberExporter] Rate limited, waiting ${Math.round(backoff / 1000)}s (attempt ${attempt + 1}/${MAX_RETRIES})`);
-                    await sleep(backoff);
+                    await pause(backoff, signal);
                     continue;
                 }
 
@@ -247,7 +273,7 @@ async function searchGuildForAuthor(
                     console.log(`[ServerMemberExporter] Failed after ${MAX_RETRIES} retries for user ${userId} in ${searchGuild.name}, skipping`);
                     return;
                 }
-                await sleep(getRetryDelay(attempt));
+                await pause(getRetryDelay(attempt), signal);
             }
         }
 
@@ -271,13 +297,10 @@ async function searchGuildForAuthor(
             const msg = Array.isArray(hit) ? hit[0] : hit;
             if (!msg) continue;
 
-            if (options.startDate) {
+            if (startBound || endBound) {
                 const msgDate = new Date(msg.timestamp);
-                if (msgDate < new Date(options.startDate)) continue;
-            }
-            if (options.endDate) {
-                const msgDate = new Date(msg.timestamp);
-                if (msgDate > new Date(options.endDate)) continue;
+                if (startBound && msgDate < startBound) continue;
+                if (endBound && msgDate >= endBound) continue;
             }
 
             const channel = ChannelStore.getChannel(msg.channel_id);
@@ -307,10 +330,10 @@ async function searchGuildForAuthor(
         if (limit && collected.length >= limit) break;
 
         if (successfulPages % COOLDOWN_INTERVAL === 0) {
-            await sleep(COOLDOWN_DURATION);
+            await pause(COOLDOWN_DURATION, signal);
         }
 
-        await sleep(nextDelay(res, rateLimitState.total429s));
+        await pause(nextDelay(res, rateLimitState.total429s), signal);
     }
 }
 

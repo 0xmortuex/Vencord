@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { CheckpointData, deleteCheckpoint, generateJobId, loadCheckpoint } from "@plugins/chatExporter/checkpoint";
+import { deleteCheckpoint, generateJobId, loadCheckpoint } from "@plugins/chatExporter/checkpoint";
 import {
     cancelUserJob,
     ChannelSelection,
@@ -17,6 +17,7 @@ import {
     UserInfo,
 } from "@plugins/userExporter/exporter";
 import { ModalContent, ModalFooter, ModalHeader, ModalProps, ModalRoot, ModalSize } from "@utils/modal";
+import { useForceUpdater } from "@utils/react";
 import {
     Button,
     ChannelStore,
@@ -94,15 +95,19 @@ export function UserExportModal({ modalProps, user }: UserExportModalProps) {
     const [startDate, setStartDate] = useState("");
     const [endDate, setEndDate] = useState("");
 
-    const [, forceUpdate] = useState(0);
-    useEffect(() => subscribe(() => forceUpdate(n => n + 1)), []);
+    const forceUpdate = useForceUpdater();
+    useEffect(() => subscribe(forceUpdate), []);
 
     const jobId = generateJobId("user", user.id);
-    const [checkpoint, setCheckpoint] = useState<CheckpointData | null>(() => loadCheckpoint(jobId));
 
     const job = getUserJob(user.id);
     const progress = job?.progress ?? null;
     const isExporting = progress !== null && (progress.status === "fetching" || progress.status === "rendering");
+
+    // Re-read on every render (subscribe() already forces one on any job state
+    // change) so a checkpoint written by a cancelled/failed export shows up
+    // without closing and reopening the modal.
+    const checkpoint = !isExporting ? loadCheckpoint(jobId) : null;
 
     const displayName = user.globalName || user.username;
 
@@ -215,12 +220,11 @@ export function UserExportModal({ modalProps, user }: UserExportModalProps) {
             },
             true,
         );
-        setCheckpoint(null);
     }
 
     function discardCheckpoint() {
         deleteCheckpoint(jobId);
-        setCheckpoint(null);
+        forceUpdate();
     }
 
     function saveProgress() {

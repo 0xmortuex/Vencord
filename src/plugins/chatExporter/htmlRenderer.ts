@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import type { Embed, MessageAttachment, MessageReaction } from "@vencord/discord-types";
+
 import { ExportedMessage } from "./exporter";
 
 function escapeHtml(text: string): string {
@@ -13,6 +15,18 @@ function escapeHtml(text: string): string {
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#039;");
+}
+
+// Embed URLs come straight from the message payload (any bot/webhook can set
+// them), so reject anything that isn't plain http(s) before using it as a link
+// target in the exported file - escapeHtml alone doesn't stop javascript: URLs.
+function safeUrl(url: string | undefined | null): string | null {
+    if (!url) return null;
+    try {
+        return /^https?:$/i.test(new URL(url).protocol) ? url : null;
+    } catch {
+        return null;
+    }
 }
 
 function renderMarkdown(text: string): string {
@@ -72,7 +86,7 @@ function getAvatarUrl(author: ExportedMessage["author"]): string {
     return `https://cdn.discordapp.com/embed/avatars/${index}.png`;
 }
 
-function renderAttachments(attachments: any[]): string {
+function renderAttachments(attachments: MessageAttachment[]): string {
     if (!attachments.length) return "";
     return attachments.map(att => {
         const isImage = att.content_type?.startsWith("image/") ||
@@ -93,9 +107,9 @@ function renderAttachments(attachments: any[]): string {
     }).join("");
 }
 
-function renderEmbeds(embeds: any[]): string {
+function renderEmbeds(embeds: Embed[]): string {
     if (!embeds.length) return "";
-    return embeds.map(embed => {
+    return embeds.map((embed: any) => {
         const borderColor = embed.color ? `#${embed.color.toString(16).padStart(6, "0")}` : "#4f545c";
         let html = `<div style="margin:4px 0;padding:8px 16px;background:#2b2d31;border-left:4px solid ${borderColor};border-radius:4px;max-width:520px;">`;
 
@@ -103,8 +117,9 @@ function renderEmbeds(embeds: any[]): string {
             html += `<div style="font-size:0.875rem;font-weight:600;margin-bottom:4px;">${escapeHtml(embed.author.name)}</div>`;
         }
         if (embed.title) {
-            const title = embed.url
-                ? `<a href="${escapeHtml(embed.url)}" style="color:#00aff4;text-decoration:none;font-weight:700;">${escapeHtml(embed.title)}</a>`
+            const embedUrl = safeUrl(embed.url);
+            const title = embedUrl
+                ? `<a href="${escapeHtml(embedUrl)}" style="color:#00aff4;text-decoration:none;font-weight:700;">${escapeHtml(embed.title)}</a>`
                 : `<span style="font-weight:700;">${escapeHtml(embed.title)}</span>`;
             html += `<div style="margin-bottom:4px;">${title}</div>`;
         }
@@ -137,7 +152,7 @@ function renderEmbeds(embeds: any[]): string {
     }).join("");
 }
 
-function renderReactions(reactions: any[]): string {
+function renderReactions(reactions: MessageReaction[]): string {
     if (!reactions.length) return "";
     const items = reactions.map(r => {
         const emoji = r.emoji.id

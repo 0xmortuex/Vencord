@@ -105,7 +105,7 @@ function buildMemberList(guildId: string, data: TrackerData): MemberEntry[] {
     entries.sort((a, b) => {
         if (a.lastSeen === null && b.lastSeen === null) return 0;
         if (a.lastSeen === null) return -1;
-        if (b.lastSeen === null) return -1;
+        if (b.lastSeen === null) return 1;
         return a.lastSeen - b.lastSeen;
     });
 
@@ -128,6 +128,7 @@ function InactivityModalComponent({ guildId, modalProps }: { guildId: string; mo
     const [search, setSearch] = useState("");
     const [loading, setLoading] = useState(true);
     const [storedData, setStoredData] = useState<TrackerData>({});
+    const [memberVersion, setMemberVersion] = useState(0);
 
     const guild = GuildStore.getGuild(guildId);
     const guildName = guild?.name ?? "Unknown Server";
@@ -137,6 +138,16 @@ function InactivityModalComponent({ guildId, modalProps }: { guildId: string; mo
             setStoredData(data ?? {});
         });
 
+        // Members stream in via GUILD_MEMBERS_CHUNK after the request below;
+        // re-derive the list on each chunk instead of hoping a fixed timeout is
+        // long enough (large guilds keep chunking well past any fixed delay).
+        function onMembersChunk(event: any) {
+            if ((event.guildId ?? event.guild_id) !== guildId) return;
+            setLoading(false);
+            setMemberVersion(v => v + 1);
+        }
+        FluxDispatcher.subscribe("GUILD_MEMBERS_CHUNK", onMembersChunk);
+
         FluxDispatcher.dispatch({
             type: "GUILD_MEMBERS_REQUEST",
             guildIds: [guildId],
@@ -144,11 +155,15 @@ function InactivityModalComponent({ guildId, modalProps }: { guildId: string; mo
             presences: false,
         });
 
+        // Fallback for guilds where no chunk ever arrives (already fully cached).
         const timer = setTimeout(() => setLoading(false), 1500);
-        return () => clearTimeout(timer);
+        return () => {
+            clearTimeout(timer);
+            FluxDispatcher.unsubscribe("GUILD_MEMBERS_CHUNK", onMembersChunk);
+        };
     }, [guildId]);
 
-    const allMembers = useMemo(() => buildMemberList(guildId, storedData), [guildId, storedData, loading]);
+    const allMembers = useMemo(() => buildMemberList(guildId, storedData), [guildId, storedData, loading, memberVersion]);
 
     const filteredMembers = useMemo(() => {
         let members = allMembers.filter(m =>

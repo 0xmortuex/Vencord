@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import type { Embed, MessageAttachment, MessageReaction } from "@vencord/discord-types";
 import { Constants, RestAPI } from "@webpack/common";
 
 export interface ExportedMessage {
@@ -18,9 +19,9 @@ export interface ExportedMessage {
     };
     timestamp: string;
     edited_timestamp: string | null;
-    attachments: any[];
-    embeds: any[];
-    reactions: any[];
+    attachments: MessageAttachment[];
+    embeds: Embed[];
+    reactions: MessageReaction[];
     pinned: boolean;
     type: number;
 }
@@ -46,9 +47,39 @@ export interface ExportProgress {
 
 type ProgressCallback = (progress: ExportProgress) => void;
 
-function delay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+// Abort-aware sleep: resolves immediately when the export is cancelled so a
+// pending backoff never keeps a dead job running.
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+    return new Promise(resolve => {
+        if (signal.aborted) return resolve();
+        const timer = setTimeout(finish, ms);
+        function finish() {
+            signal.removeEventListener("abort", finish);
+            clearTimeout(timer);
+            resolve();
+        }
+        signal.addEventListener("abort", finish);
+    });
 }
+
+// Discord snowflakes encode a timestamp; seeding `before` from the end date
+// starts pagination exactly at the bound instead of scanning (and discarding)
+// every newer message in the channel first.
+const DISCORD_EPOCH = 1420070400000;
+function dateToSnowflake(date: Date): string {
+    return (BigInt(Math.max(0, date.getTime() - DISCORD_EPOCH)) << 22n).toString();
+}
+
+// Date inputs are plain YYYY-MM-DD strings that parse to midnight UTC. The end
+// bound must therefore be the start of the NEXT day (exclusive), otherwise every
+// message sent during the selected end date gets dropped.
+function endDateBound(dateStr: string): Date {
+    const d = new Date(dateStr);
+    d.setUTCDate(d.getUTCDate() + 1);
+    return d;
+}
+
+const MAX_CONSECUTIVE_429S = 10;
 
 type CheckpointCallback = (lastMessageId: string | null, fetchedSoFar: number) => void;
 
@@ -60,10 +91,17 @@ export async function fetchMessages(
     onCheckpoint?: CheckpointCallback,
 ): Promise<ExportedMessage[]> {
     const messages: ExportedMessage[] = [];
-    let beforeId: string | undefined;
     let done = false;
     let lastCheckpointCount = 0;
+    let consecutive429s = 0;
     const limit = options.messageLimit;
+
+    const startBound = options.startDate ? new Date(options.startDate) : null;
+    const endBound = options.endDate ? endDateBound(options.endDate) : null;
+
+    // Start paging directly at the end bound instead of at the newest message -
+    // otherwise every message newer than endDate is fetched just to be discarded.
+    let beforeId: string | undefined = endBound ? dateToSnowflake(endBound) : undefined;
 
     while (!done) {
         if (signal.aborted) {
@@ -85,10 +123,23 @@ export async function fetchMessages(
                 query,
                 retries: 2
             });
+            consecutive429s = 0;
         } catch (e: any) {
             if (e?.status === 429) {
-                const retryAfter = e?.body?.retry_after ?? e?.headers?.get?.("retry-after") ?? 2;
-                await delay(Number(retryAfter) * 1000);
+                if (++consecutive429s >= MAX_CONSECUTIVE_429S) {
+                    onProgress({
+                        fetched: messages.length,
+                        total: limit,
+                        status: "error",
+                        error: "Rate limited too many times in a row"
+                    });
+                    throw e;
+                }
+                // Honor the server's retry_after but grow the wait on repeated
+                // 429s - a tiny/zero retry_after must not hot-loop requests.
+                const retryAfter = Number(e?.body?.retry_after ?? e?.headers?.get?.("retry-after") ?? 2);
+                const backoff = Math.min(60_000, Math.max(retryAfter * 1000, 1000 * 2 ** (consecutive429s - 1)));
+                await pause(backoff, signal);
                 continue;
             }
             onProgress({
@@ -116,17 +167,15 @@ export async function fetchMessages(
                 break;
             }
 
-            // Date filtering
-            if (options.startDate) {
+            // Date filtering (endBound is mostly enforced by the seeded
+            // `before` id already; this catches clock-skewed stragglers)
+            if (startBound || endBound) {
                 const msgDate = new Date(msg.timestamp);
-                if (msgDate < new Date(options.startDate)) {
+                if (startBound && msgDate < startBound) {
                     done = true;
                     break;
                 }
-            }
-            if (options.endDate) {
-                const msgDate = new Date(msg.timestamp);
-                if (msgDate > new Date(options.endDate)) continue;
+                if (endBound && msgDate >= endBound) continue;
             }
 
             const exported: ExportedMessage = {
@@ -177,7 +226,7 @@ export async function fetchMessages(
 
         // Only delay if we got a full batch (more messages likely exist)
         if (!done && batch.length === 100) {
-            await delay(300);
+            await pause(300, signal);
         }
     }
 
@@ -191,16 +240,4 @@ export async function fetchMessages(
     });
 
     return messages;
-}
-
-export function downloadFile(content: string, filename: string, mimeType: string) {
-    const blob = new Blob([content], { type: mimeType });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
 }

@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import * as DataStore from "@api/DataStore";
 import {
     cancelMemberExport,
     earlyFinishMemberExport,
@@ -15,6 +16,7 @@ import {
     subscribe,
 } from "@plugins/serverMemberExporter/exporter";
 import { ModalContent, ModalFooter, ModalHeader, ModalProps, ModalRoot, ModalSize } from "@utils/modal";
+import { useForceUpdater } from "@utils/react";
 import {
     Button,
     Forms,
@@ -35,6 +37,27 @@ interface ServerMemberExportModalProps {
     modalProps: ModalProps;
     guildId: string;
     guildName: string;
+}
+
+// Saved selection preset: which members to export and which servers to search.
+// Presets are stored per primary guild since member ids are guild-specific.
+interface ExportPreset {
+    name: string;
+    memberIds: string[];
+    guildIds: string[];
+}
+
+const PRESETS_KEY = "ServerMemberExporter_presets";
+
+async function loadPresets(guildId: string): Promise<ExportPreset[]> {
+    const all = await DataStore.get<Record<string, ExportPreset[]>>(PRESETS_KEY);
+    return all?.[guildId] ?? [];
+}
+
+async function storePresets(guildId: string, presets: ExportPreset[]): Promise<void> {
+    const all = (await DataStore.get<Record<string, ExportPreset[]>>(PRESETS_KEY)) ?? {};
+    all[guildId] = presets;
+    await DataStore.set(PRESETS_KEY, all);
 }
 
 function memberDisplayName(m: MemberInfo): string {
@@ -139,6 +162,16 @@ export function ServerMemberExportModal({ modalProps, guildId, guildName }: Serv
     const [roleFilter, setRoleFilter] = useState<string | null>(null);
     // Servers to search each member in; the primary (right-clicked) server is always included.
     const [searchGuildIds, setSearchGuildIds] = useState<Set<string>>(() => new Set([guildId]));
+    const [guildSearch, setGuildSearch] = useState("");
+
+    const [presets, setPresets] = useState<ExportPreset[]>([]);
+    const [presetName, setPresetName] = useState("");
+
+    useEffect(() => {
+        let cancelled = false;
+        loadPresets(guildId).then(p => !cancelled && setPresets(p));
+        return () => { cancelled = true; };
+    }, [guildId]);
 
     const [format, setFormat] = useState<"html" | "json">("html");
     const [messageLimit, setMessageLimit] = useState<number | null>(500);
@@ -149,8 +182,8 @@ export function ServerMemberExportModal({ modalProps, guildId, guildName }: Serv
     const [startDate, setStartDate] = useState("");
     const [endDate, setEndDate] = useState("");
 
-    const [, forceUpdate] = useState(0);
-    useEffect(() => subscribe(() => forceUpdate(n => n + 1)), []);
+    const forceUpdate = useForceUpdater();
+    useEffect(() => subscribe(forceUpdate), []);
 
     const job = getMemberExportJob(guildId);
     const progress = job?.progress ?? null;
@@ -188,6 +221,44 @@ export function ServerMemberExportModal({ modalProps, guildId, guildName }: Serv
 
     function deselectAll() {
         setSelected(new Set());
+    }
+
+    const filteredGuilds = useMemo(() => {
+        const q = guildSearch.trim().toLowerCase();
+        if (!q) return allGuilds;
+        return allGuilds.filter(g => g.name.toLowerCase().includes(q));
+    }, [allGuilds, guildSearch]);
+
+    function savePreset() {
+        const name = presetName.trim();
+        if (!name || selectedCount === 0) return;
+        const preset: ExportPreset = {
+            name,
+            memberIds: [...selected],
+            guildIds: [...searchGuildIds],
+        };
+        // Same name overwrites the existing preset.
+        const next = [...presets.filter(p => p.name !== name), preset];
+        setPresets(next);
+        setPresetName("");
+        storePresets(guildId, next);
+    }
+
+    function applyPreset(preset: ExportPreset) {
+        // Only members Discord has loaded can be selected (or exported).
+        const loaded = new Set(members.map(m => m.id));
+        setSelected(new Set(preset.memberIds.filter(id => loaded.has(id))));
+
+        const known = new Set(allGuilds.map(g => g.id));
+        const guilds = new Set(preset.guildIds.filter(id => known.has(id)));
+        guilds.add(guildId);
+        setSearchGuildIds(guilds);
+    }
+
+    function deletePreset(name: string) {
+        const next = presets.filter(p => p.name !== name);
+        setPresets(next);
+        storePresets(guildId, next);
     }
 
     function toggleSearchGuild(id: string) {
@@ -252,8 +323,67 @@ export function ServerMemberExportModal({ modalProps, guildId, guildName }: Serv
 
             <ModalContent>
                 <div style={{ padding: "16px 0" }}>
-                    {/* Format */}
+                    {/* Presets */}
                     <Forms.FormSection>
+                        <Forms.FormTitle>Presets</Forms.FormTitle>
+                        <Text variant="text-xs/normal" style={{ color: "#949ba4", marginBottom: "6px" }}>
+                            Save the current member and server selection, then re-apply it with one click.
+                        </Text>
+                        {presets.length > 0 && (
+                            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "8px" }}>
+                                {presets.map(p => (
+                                    <div key={p.name} style={{ display: "inline-flex", alignItems: "center", gap: "2px" }}>
+                                        <Button
+                                            size={Button.Sizes.SMALL}
+                                            look={Button.Looks.OUTLINED}
+                                            color={Button.Colors.PRIMARY}
+                                            onClick={() => applyPreset(p)}
+                                            disabled={isExporting}
+                                            aria-label={`Apply preset ${p.name}`}
+                                        >
+                                            {p.name} ({p.memberIds.length} member{p.memberIds.length !== 1 ? "s" : ""}, {p.guildIds.length} server{p.guildIds.length !== 1 ? "s" : ""})
+                                        </Button>
+                                        <Button
+                                            size={Button.Sizes.SMALL}
+                                            look={Button.Looks.LINK}
+                                            color={Button.Colors.RED}
+                                            onClick={() => deletePreset(p.name)}
+                                            disabled={isExporting}
+                                            aria-label={`Delete preset ${p.name}`}
+                                        >
+                                            ✕
+                                        </Button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                            <div style={{ flex: 1 }}>
+                                <TextInput
+                                    value={presetName}
+                                    onChange={setPresetName}
+                                    placeholder="Preset name..."
+                                    disabled={isExporting}
+                                />
+                            </div>
+                            <Button
+                                size={Button.Sizes.SMALL}
+                                color={Button.Colors.BRAND}
+                                onClick={savePreset}
+                                disabled={isExporting || !presetName.trim() || selectedCount === 0}
+                            >
+                                Save Preset
+                            </Button>
+                        </div>
+                        {selectedCount === 0 && presetName.trim().length > 0 && (
+                            <Text variant="text-xs/normal" style={{ color: "#949ba4", marginTop: "4px" }}>
+                                Select at least one member below to save a preset.
+                            </Text>
+                        )}
+                    </Forms.FormSection>
+
+                    {/* Format */}
+                    <Forms.FormSection style={{ marginTop: "16px" }}>
                         <Forms.FormTitle>Format</Forms.FormTitle>
                         <div style={{ display: "flex", gap: "8px" }}>
                             <Button
@@ -368,6 +498,14 @@ export function ServerMemberExportModal({ modalProps, guildId, guildName }: Serv
                         <Text variant="text-xs/normal" style={{ color: "#949ba4", marginBottom: "6px" }}>
                             Each selected member is searched in every server you tick here. The current server is always included.
                         </Text>
+                        <div style={{ marginBottom: "8px" }}>
+                            <TextInput
+                                value={guildSearch}
+                                onChange={setGuildSearch}
+                                placeholder="Search servers by name..."
+                                disabled={isExporting}
+                            />
+                        </div>
                         <div style={{
                             maxHeight: "140px",
                             overflowY: "auto",
@@ -375,7 +513,7 @@ export function ServerMemberExportModal({ modalProps, guildId, guildName }: Serv
                             borderRadius: "4px",
                             padding: "8px",
                         }}>
-                            {allGuilds.map(g => {
+                            {filteredGuilds.map(g => {
                                 const isPrimary = g.id === guildId;
                                 return (
                                     <div
@@ -404,6 +542,11 @@ export function ServerMemberExportModal({ modalProps, guildId, guildName }: Serv
                                     </div>
                                 );
                             })}
+                            {filteredGuilds.length === 0 && (
+                                <div style={{ padding: "12px", color: "#949ba4", textAlign: "center" }}>
+                                    No servers match your search.
+                                </div>
+                            )}
                         </div>
                     </Forms.FormSection>
 

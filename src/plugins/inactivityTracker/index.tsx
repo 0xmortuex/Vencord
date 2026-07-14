@@ -8,6 +8,8 @@ import "./style.css";
 
 import { NavContextMenuPatchCallback } from "@api/ContextMenu";
 import * as DataStore from "@api/DataStore";
+import { debounce } from "@shared/debounce";
+import { Devs } from "@utils/constants";
 import definePlugin from "@utils/types";
 import { FluxDispatcher, GuildStore, Menu } from "@webpack/common";
 
@@ -37,6 +39,10 @@ function saveData(data: TrackerData) {
     DataStore.set(STORAGE_KEY, data).catch(e =>
         console.error("[InactivityTracker] Failed to persist data:", e));
 }
+
+// Serializing the entire tracker blob on every MESSAGE_CREATE scales with total
+// tracked users, not the one entry that changed - coalesce bursts into one write.
+const saveDataDebounced = debounce(() => saveData(trackerData), 5000);
 
 function cleanOldEntries(data: TrackerData): TrackerData {
     const cutoff = Date.now() - MAX_AGE_MS;
@@ -68,7 +74,7 @@ function handleMessageCreate(event: any) {
     }
 
     trackerData[guildId][userId] = Date.now();
-    saveData(trackerData);
+    saveDataDebounced();
 }
 
 function makeContextMenuPatch(getGuildId: (props: any) => string | undefined): NavContextMenuPatchCallback {
@@ -97,7 +103,7 @@ const guildHeaderPopoutPatch = makeContextMenuPatch(props => props?.guild?.id);
 export default definePlugin({
     name: "InactivityTracker",
     description: "Tracks when each member last sent a message in the current server and shows who's been inactive.",
-    authors: [{ name: "UnknownHacker9991", id: 0n }],
+    authors: [Devs.UnknownHacker9991],
 
     contextMenus: {
         "guild-context": guildContextMenuPatch,
@@ -112,6 +118,8 @@ export default definePlugin({
 
     stop() {
         FluxDispatcher.unsubscribe("MESSAGE_CREATE", handleMessageCreate);
+        // Flush anything a pending debounce hasn't written yet.
+        saveData(trackerData);
     },
 
     getTrackerData(): TrackerData {

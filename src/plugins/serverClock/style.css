@@ -1,0 +1,24 @@
+.vc-serverclock-time {
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 500;
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    margin-left: 4px;
+    white-space: nowrap;
+    vertical-align: middle;
+}
+
+.vc-serverclock-time-small {
+    font-size: 10px;
+}
+
+.vc-serverclock-profile {
+    color: var(--text-muted);
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 4px;
+}

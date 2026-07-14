@@ -4,9 +4,10 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { CheckpointData, deleteCheckpoint, generateJobId, loadCheckpoint } from "@plugins/chatExporter/checkpoint";
+import { deleteCheckpoint, generateJobId, loadCheckpoint } from "@plugins/chatExporter/checkpoint";
 import { cancelServerJob, getServerJob, isEarlyFinishRequested, requestEarlyFinish, saveServerProgress, startServerExport, subscribe } from "@plugins/chatExporter/exportManager";
 import { ModalContent, ModalFooter, ModalHeader, ModalProps, ModalRoot, ModalSize } from "@utils/modal";
+import { useForceUpdater } from "@utils/react";
 import { Button, ChannelStore, Forms, GuildChannelStore, showToast, Text, Toasts, useEffect, useState } from "@webpack/common";
 
 interface ServerExportModalProps {
@@ -36,12 +37,11 @@ export function ServerExportModal({ modalProps, guildId, guildName }: ServerExpo
     const [format, setFormat] = useState<"html" | "json">("html");
     const [messageLimit, setMessageLimit] = useState<number | null>(1000);
     const [combineFiles, setCombineFiles] = useState(false);
-    const [, forceUpdate] = useState(0);
+    const forceUpdate = useForceUpdater();
 
     const jobId = generateJobId("server", guildId);
-    const [checkpoint, setCheckpoint] = useState<CheckpointData | null>(() => loadCheckpoint(jobId));
 
-    useEffect(() => subscribe(() => forceUpdate(n => n + 1)), []);
+    useEffect(() => subscribe(forceUpdate), []);
 
     const job = getServerJob(guildId);
     const progress = job?.progress ?? null;
@@ -49,6 +49,11 @@ export function ServerExportModal({ modalProps, guildId, guildName }: ServerExpo
     const channelsDone = job?.channelsDone ?? 0;
     const selectedCount = channels.filter(c => c.selected).length;
     const isExporting = progress !== null && (progress.status === "fetching" || progress.status === "rendering");
+
+    // Re-read on every render (subscribe() already forces one on any job state
+    // change) so a checkpoint written by a cancelled/failed export shows up
+    // without closing and reopening the modal.
+    const checkpoint = !isExporting ? loadCheckpoint(jobId) : null;
 
     function toggleChannel(id: string) {
         setChannels(prev => prev.map(c => c.id === id ? { ...c, selected: !c.selected } : c));
@@ -93,12 +98,11 @@ export function ServerExportModal({ modalProps, guildId, guildName }: ServerExpo
             combineFiles,
             resumeFromCheckpoint: true,
         });
-        setCheckpoint(null);
     }
 
     function discardCheckpoint() {
         deleteCheckpoint(jobId);
-        setCheckpoint(null);
+        forceUpdate();
     }
 
     function saveProgress() {

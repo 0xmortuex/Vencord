@@ -4,10 +4,11 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { CheckpointData, deleteCheckpoint, generateJobId, loadCheckpoint } from "@plugins/chatExporter/checkpoint";
+import { deleteCheckpoint, generateJobId, loadCheckpoint } from "@plugins/chatExporter/checkpoint";
 import { ExportOptions } from "@plugins/chatExporter/exporter";
 import { cancelChannelJob, getChannelJob, saveChannelProgress, startChannelExport, subscribe } from "@plugins/chatExporter/exportManager";
 import { ModalContent, ModalFooter, ModalHeader, ModalProps, ModalRoot, ModalSize } from "@utils/modal";
+import { useForceUpdater } from "@utils/react";
 import { Button, Forms, showToast, Text, Toasts, useEffect, useState } from "@webpack/common";
 
 interface ExportModalProps {
@@ -26,16 +27,20 @@ export function ExportModal({ modalProps, channelId, channelName, serverName }: 
     const [includePins, setIncludePins] = useState(true);
     const [startDate, setStartDate] = useState("");
     const [endDate, setEndDate] = useState("");
-    const [, forceUpdate] = useState(0);
+    const forceUpdate = useForceUpdater();
 
     const jobId = generateJobId("channel", channelId);
-    const [checkpoint, setCheckpoint] = useState<CheckpointData | null>(() => loadCheckpoint(jobId));
 
-    useEffect(() => subscribe(() => forceUpdate(n => n + 1)), []);
+    useEffect(() => subscribe(forceUpdate), []);
 
     const job = getChannelJob(channelId);
     const progress = job?.progress ?? null;
     const isExporting = progress !== null && (progress.status === "fetching" || progress.status === "rendering");
+
+    // Re-read on every render (subscribe() already forces one on any job state
+    // change) so a checkpoint written by a cancelled/failed export shows up
+    // without closing and reopening the modal.
+    const checkpoint = !isExporting ? loadCheckpoint(jobId) : null;
 
     function buildOptions(): ExportOptions {
         return {
@@ -69,12 +74,11 @@ export function ExportModal({ modalProps, channelId, channelName, serverName }: 
             channelName,
             serverName,
         );
-        setCheckpoint(null);
     }
 
     function discardCheckpoint() {
         deleteCheckpoint(jobId);
-        setCheckpoint(null);
+        forceUpdate();
     }
 
     function saveProgress() {
