@@ -35,8 +35,11 @@ export function VirtualList<T>({ items, rowHeight, height, renderRow, keyOf, cla
     useEffect(() => { if (ref.current) ref.current.scrollTop = 0; setScrollTop(0); }, [items]);
 
     const total = items.length;
-    const start = Math.max(0, Math.floor(scrollTop / rowHeight) - overscan);
-    const end = Math.min(total, Math.ceil((scrollTop + height) / rowHeight) + overscan);
+    const rh = Math.max(1, rowHeight);
+    // Clamp both ends: a stale scrollTop (list shrank under the same identity)
+    // must not put start past the end.
+    const start = Math.min(total, Math.max(0, Math.floor(scrollTop / rh) - overscan));
+    const end = Math.min(total, Math.max(start, Math.ceil((scrollTop + height) / rh) + overscan));
     const slice = items.slice(start, end);
 
     return (
@@ -46,10 +49,10 @@ export function VirtualList<T>({ items, rowHeight, height, renderRow, keyOf, cla
             style={{ height, overflowY: "auto", position: "relative", ...style }}
             onScroll={e => setScrollTop((e.currentTarget as HTMLDivElement).scrollTop)}
         >
-            <div style={{ height: total * rowHeight, position: "relative" }}>
-                <div style={{ position: "absolute", top: start * rowHeight, left: 0, right: 0 }}>
+            <div style={{ height: total * rh, position: "relative" }}>
+                <div style={{ position: "absolute", top: start * rh, left: 0, right: 0 }}>
                     {slice.map((item, i) => (
-                        <div key={keyOf(item, start + i)} style={{ minHeight: rowHeight }}>
+                        <div key={keyOf(item, start + i)} style={{ minHeight: rh }}>
                             {renderRow(item, start + i)}
                         </div>
                     ))}

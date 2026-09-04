@@ -247,6 +247,7 @@ export function reportRunProgress(detail: string, done = 0, total = 0) {
 
 let tickInterval: ReturnType<typeof setInterval> | null = null;
 let nextRunTimer: ReturnType<typeof setTimeout> | null = null;
+let startupTimer: ReturnType<typeof setTimeout> | null = null;
 let running = false;
 let schedulerActive = false;
 
@@ -269,7 +270,7 @@ export function startScheduler() {
     tickInterval = setInterval(tick, 5 * 60_000);
     // Catch up on runs missed while Discord was closed. Small delay so stores
     // (channels, members) are populated before the first export fires.
-    setTimeout(tick, 15_000);
+    startupTimer = setTimeout(() => { startupTimer = null; tick(); }, 15_000);
     armNextRun();
 }
 
@@ -283,10 +284,15 @@ export function stopScheduler() {
         clearTimeout(nextRunTimer);
         nextRunTimer = null;
     }
+    if (startupTimer) {
+        clearTimeout(startupTimer);
+        startupTimer = null;
+    }
 }
 
 async function tick() {
-    if (running) return;
+    // A timer that fired just after stop() must not run a schedule.
+    if (!schedulerActive || running) return;
     const due = schedules.filter(s => s.enabled && s.nextRunAt <= Date.now());
     if (!due.length) return;
 

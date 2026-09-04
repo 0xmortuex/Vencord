@@ -18,7 +18,7 @@ import { Clickable, ContextMenuApi, FluxDispatcher, Menu, React } from "@webpack
 import { contextMenus } from "./components/contextMenu";
 import { openCategoryModal, requireSettingsModal } from "./components/CreateCategoryModal";
 import { DEFAULT_CHUNK_SIZE } from "./constants";
-import { canMoveCategory, canMoveCategoryInDirection, Category, categoryLen, collapseCategory, getAllUncollapsedChannels, getCategoryByIndex, getSections, init, isPinned, moveCategory, removeCategory, usePinnedDms } from "./data";
+import { canMoveCategory, canMoveCategoryInDirection, Category, categoryLen, collapseCategory, frameMemo,getAllUncollapsedChannels, getCategoryByIndex, getSections, init, isPinned, moveCategory, removeCategory, usePinnedDms } from "./data";
 
 interface ChannelComponentProps {
     children: React.ReactNode,
@@ -357,7 +357,12 @@ export default definePlugin({
         if (category.channels.length === 0) return [];
 
         if (settings.store.pinOrder === PinOrder.LastMessage) {
-            return PrivateChannelSortStore.getPrivateChannelIds().filter(c => category.channels.includes(c));
+            // Called once per pinned row per render; memoized per render pass
+            // (see frameMemo) and filtered with a Set instead of Array.includes.
+            return frameMemo("category-channels:" + category.id, () => {
+                const inCategory = new Set(category.channels);
+                return PrivateChannelSortStore.getPrivateChannelIds().filter(c => inCategory.has(c));
+            });
         }
 
         return category?.channels ?? [];

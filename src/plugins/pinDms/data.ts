@@ -75,8 +75,35 @@ export function collapseCategory(id: string, value = true) {
 }
 
 // Utils
+// Per-render-pass memo. Discord's DM list calls isPinned() once per DM and
+// getCategoryChannels() once per pinned row on EVERY render, and each call used
+// to scan every category's channel array (O(DMs × pins) per render). Results
+// are cached for the current synchronous pass and cleared on the next
+// microtask, so they can never be stale across tasks (all mutations of
+// currentUserCategories and store updates land in later tasks).
+const frameCache = new Map<string, any>();
+let frameClearQueued = false;
+export function frameMemo<T>(key: string, compute: () => T): T {
+    if (frameCache.has(key)) return frameCache.get(key);
+    const v = compute();
+    frameCache.set(key, v);
+    if (!frameClearQueued) {
+        frameClearQueued = true;
+        queueMicrotask(() => { frameCache.clear(); frameClearQueued = false; });
+    }
+    return v;
+}
+
+function pinnedIds(): Set<string> {
+    return frameMemo("pinned-ids", () => {
+        const set = new Set<string>();
+        for (const c of currentUserCategories) for (const id of c.channels) set.add(id);
+        return set;
+    });
+}
+
 export function isPinned(id: string) {
-    return currentUserCategories.some(c => c.channels.includes(id));
+    return pinnedIds().has(id);
 }
 
 export function categoryLen() {
@@ -84,12 +111,17 @@ export function categoryLen() {
 }
 
 export function getAllUncollapsedChannels() {
-    if (settings.store.pinOrder === PinOrder.LastMessage) {
-        const sortedChannels = PrivateChannelSortStore.getPrivateChannelIds();
-        return currentUserCategories.filter(c => !c.collapsed).flatMap(c => sortedChannels.filter(channel => c.channels.includes(channel)));
-    }
+    return frameMemo("uncollapsed", () => {
+        if (settings.store.pinOrder === PinOrder.LastMessage) {
+            const sortedChannels = PrivateChannelSortStore.getPrivateChannelIds();
+            return currentUserCategories.filter(c => !c.collapsed).flatMap(c => {
+                const inCategory = new Set(c.channels);
+                return sortedChannels.filter(channel => inCategory.has(channel));
+            });
+        }
 
-    return currentUserCategories.filter(c => !c.collapsed).flatMap(c => c.channels);
+        return currentUserCategories.filter(c => !c.collapsed).flatMap(c => c.channels);
+    });
 }
 
 export function getSections() {

@@ -82,11 +82,18 @@ export async function persistCacheToDisk() {
     if (!dirtyGuilds.size) return;
     const toWrite = [...dirtyGuilds];
     dirtyGuilds.clear();
+    // Serialize every dirty guild SYNCHRONOUSLY before the first await: stop()
+    // calls clearMemoryCache() right after kicking this off, so reading the
+    // live map after an await would find it empty for all but the first guild.
+    const snapshots: Array<[string, Record<string, CachedMessage>]> = [];
     for (const guildId of toWrite) {
         const cache = memoryCache.get(guildId);
         if (!cache) continue;
         const obj: Record<string, CachedMessage> = {};
         for (const [id, msg] of cache.entries()) obj[id] = msg;
+        snapshots.push([guildId, obj]);
+    }
+    for (const [guildId, obj] of snapshots) {
         await DataStore.set(CACHE_PREFIX + guildId, obj);
     }
 }
@@ -131,8 +138,15 @@ let flushing: Promise<void> | null = null;
 const FLUSH_DELAY_MS = 750;
 
 async function flushPendingAdds(): Promise<void> {
-    if (flushing) return flushing;
+    // Always drop the pending timer first: if a timer fires while a flush is
+    // still in flight, returning early would leave flushTimer set and no later
+    // add would ever schedule another flush (queued deletes stranded in memory).
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+    if (flushing) {
+        // Wait for the in-flight write, then drain whatever queued meanwhile.
+        await flushing;
+        return flushPendingAdds();
+    }
     if (!pendingAdds.length) return;
     const batch = pendingAdds.splice(0, pendingAdds.length);
     flushing = DataStore.update<DeletedMessage[]>(DELETED_KEY, deleted => {
