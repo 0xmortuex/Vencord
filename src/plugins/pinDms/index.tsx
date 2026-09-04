@@ -64,6 +64,9 @@ export const settings = definePluginSettings({
 });
 
 export default definePlugin({
+    // Enabled out of the box in this build (my everyday set); an explicit
+    // off-toggle in settings still wins over this default.
+    enabledByDefault: true,
     name: "PinDMs",
     description: "Allows you to pin private channels to the top of your DM list. To pin/unpin or re-order pins, right click DMs",
     tags: ["Friends", "Organisation"],

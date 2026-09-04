@@ -172,6 +172,9 @@ export function buildExtraRoleContextMenuItems(role: Role, guild: Guild, popoutR
 }
 
 export default definePlugin({
+    // Enabled out of the box in this build (my everyday set); an explicit
+    // off-toggle in settings still wins over this default.
+    enabledByDefault: true,
     name: "BetterRoleContext",
     description: "Adds options to copy role color / edit role / view role icon when right clicking roles in the user profile",
     tags: ["Roles", "Appearance"],

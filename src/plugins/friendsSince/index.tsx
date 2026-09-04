@@ -20,6 +20,9 @@ const locale = findByPropsLazy("getLocale");
 const Section = findComponentByCodeLazy("headingVariant:", '"section"', "headingIcon:");
 
 export default definePlugin({
+    // Enabled out of the box in this build (my everyday set); an explicit
+    // off-toggle in settings still wins over this default.
+    enabledByDefault: true,
     name: "FriendsSince",
     description: "Shows when you became friends with someone in the user popout",
     tags: ["Friends"],

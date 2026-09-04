@@ -27,6 +27,9 @@ const settings = definePluginSettings({
 });
 
 export default definePlugin({
+    // Enabled out of the box in this build (my everyday set); an explicit
+    // off-toggle in settings still wins over this default.
+    enabledByDefault: true,
     name: "CustomIdle",
     description: "Allows you to set the time before Discord goes idle (or disable auto-idle)",
     tags: ["Activity", "Customisation"],

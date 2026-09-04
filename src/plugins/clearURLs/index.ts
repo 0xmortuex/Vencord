@@ -49,6 +49,9 @@ interface RuleSet {
 }
 
 export default definePlugin({
+    // Enabled out of the box in this build (my everyday set); an explicit
+    // off-toggle in settings still wins over this default.
+    enabledByDefault: true,
     name: "ClearURLs",
     description: "Automatically removes tracking elements from URLs you send",
     tags: ["Privacy", "Utility"],

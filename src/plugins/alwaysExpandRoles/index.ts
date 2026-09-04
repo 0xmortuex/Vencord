@@ -22,6 +22,9 @@ import definePlugin from "@utils/types";
 
 migratePluginSettings("AlwaysExpandRoles", "ShowAllRoles");
 export default definePlugin({
+    // Enabled out of the box in this build (my everyday set); an explicit
+    // off-toggle in settings still wins over this default.
+    enabledByDefault: true,
     name: "AlwaysExpandRoles",
     description: "Always expands the role list in profile popouts",
     tags: ["Appearance", "Roles"],

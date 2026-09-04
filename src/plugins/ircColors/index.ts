@@ -60,6 +60,9 @@ const settings = definePluginSettings({
 });
 
 export default definePlugin({
+    // Enabled out of the box in this build (my everyday set); an explicit
+    // off-toggle in settings still wins over this default.
+    enabledByDefault: true,
     name: "IrcColors",
     description: "Makes username colors in chat unique, like in IRC clients",
     tags: ["Appearance", "Customisation"],

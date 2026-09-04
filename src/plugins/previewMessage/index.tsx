@@ -137,6 +137,9 @@ const PreviewButton: ChatBarButtonFactory = ({ isAnyChat, isEmpty, type: { attac
 };
 
 export default definePlugin({
+    // Enabled out of the box in this build (my everyday set); an explicit
+    // off-toggle in settings still wins over this default.
+    enabledByDefault: true,
     stop() { revokePreviewUrls(); },
     name: "PreviewMessage",
     description: "Lets you preview your message before sending it.",

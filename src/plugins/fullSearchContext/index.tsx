@@ -79,6 +79,9 @@ const contextMenuPatch: NavContextMenuPatchCallback = (children, props: MessageA
 
 migratePluginSettings("FullSearchContext", "SearchReply");
 export default definePlugin({
+    // Enabled out of the box in this build (my everyday set); an explicit
+    // off-toggle in settings still wins over this default.
+    enabledByDefault: true,
     name: "FullSearchContext",
     description: "Makes the message context menu in message search results have all options you'd expect",
     tags: ["Utility"],

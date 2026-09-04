@@ -87,6 +87,9 @@ export const userContextPatch: NavContextMenuPatchCallback = (children, { user }
 };
 
 export default definePlugin({
+    // Enabled out of the box in this build (my everyday set); an explicit
+    // off-toggle in settings still wins over this default.
+    enabledByDefault: true,
     name: "BiggerStreamPreview",
     description: "This plugin allows you to enlarge stream previews",
     tags: ["Media", "Appearance"],
