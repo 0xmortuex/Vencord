@@ -51,7 +51,11 @@ function fetchReactions(msg: Message, emoji: ReactionEmoji, type: number) {
         oldFormErrors: true
     })
         .then(res => {
+            // Only push users the client doesn't already know. Dispatching a
+            // USER_UPDATE for every reactor (up to 100 per reaction, per reaction
+            // on screen) woke every USER_UPDATE subscriber in the app for no gain.
             for (const user of res.body) {
+                if (UserStore.getUser(user.id)) continue;
                 FluxDispatcher.dispatch({
                     type: "USER_UPDATE",
                     user

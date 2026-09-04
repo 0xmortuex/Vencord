@@ -24,7 +24,10 @@ import { useMemo } from "@webpack/common";
 
 // Calculate a CSS color string based on the user ID
 function calculateNameColorForUser(id?: string) {
-    const { lightness } = settings.use(["lightness"]);
+    // A plain store read. settings.use() subscribed/unsubscribed a settings
+    // listener on EVERY username and member-list row render; names re-render
+    // constantly anyway, so a direct read stays current without that churn.
+    const { lightness } = settings.store;
     const idHash = useMemo(() => id ? h64(id) : null, [id]);
 
     return idHash && `hsl(${idHash % 360n}, 100%, ${lightness}%)`;
