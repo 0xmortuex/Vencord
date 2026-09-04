@@ -16,6 +16,36 @@ interface TimeDisplayProps {
     small?: boolean;
 }
 
+// One shared minute ticker for every visible clock. Previously each rendered
+// member row created its own setInterval(60s) — a 200-member list meant 200
+// unsynchronized timers each firing its own setState. Now a single timer,
+// aligned to the minute boundary so all clocks flip together, notifies every
+// mounted TimeDisplay; the timer only exists while at least one is mounted.
+const tickListeners = new Set<() => void>();
+let tickTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleTick() {
+    if (tickTimer) return;
+    const msToNextMinute = 60_000 - (Date.now() % 60_000);
+    tickTimer = setTimeout(() => {
+        tickTimer = null;
+        for (const fn of tickListeners) fn();
+        if (tickListeners.size) scheduleTick();
+    }, msToNextMinute + 20);
+}
+
+function subscribeTick(fn: () => void): () => void {
+    tickListeners.add(fn);
+    scheduleTick();
+    return () => {
+        tickListeners.delete(fn);
+        if (!tickListeners.size && tickTimer) {
+            clearTimeout(tickTimer);
+            tickTimer = null;
+        }
+    };
+}
+
 function formatTime(utcOffset: number, use24Hour: boolean): string {
     const now = new Date();
     const utcMs = now.getTime() + now.getTimezoneOffset() * 60000;
@@ -39,12 +69,7 @@ export function TimeDisplay({ utcOffset, timezoneName, use24Hour, small }: TimeD
 
     React.useEffect(() => {
         setTime(formatTime(utcOffset, use24Hour));
-
-        const interval = setInterval(() => {
-            setTime(formatTime(utcOffset, use24Hour));
-        }, 60000);
-
-        return () => clearInterval(interval);
+        return subscribeTick(() => setTime(formatTime(utcOffset, use24Hour)));
     }, [utcOffset, use24Hour]);
 
     let utcLabel: string;
@@ -70,7 +95,7 @@ export function TimeDisplay({ utcOffset, timezoneName, use24Hour, small }: TimeD
                     {...tooltipProps}
                     className={cl("time", { small: !!small })}
                 >
-                    {"\uD83D\uDD50"} {time}
+                    {"🕐"} {time}
                 </span>
             )}
         </Tooltip>

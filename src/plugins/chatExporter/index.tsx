@@ -12,6 +12,7 @@ import { openModal } from "@utils/modal";
 import definePlugin from "@utils/types";
 import { ChannelStore, GuildStore, Menu } from "@webpack/common";
 
+import { BulkServerExportModal } from "./components/BulkServerExportModal";
 import { ExportModal } from "./components/ExportModal";
 import { ServerExportModal } from "./components/ServerExportModal";
 
@@ -42,6 +43,15 @@ function openServerExportModal(guildId: string) {
             modalProps={modalProps}
             guildId={guildId}
             guildName={guild.name}
+        />
+    ));
+}
+
+function openBulkServerExportModal(initialGuildId?: string) {
+    openModal(modalProps => (
+        <BulkServerExportModal
+            modalProps={modalProps}
+            initialGuildId={initialGuildId}
         />
     ));
 }
@@ -95,11 +105,18 @@ const guildContextPatch: NavContextMenuPatchCallback = (children, { guild }) => 
             action={() => openServerExportModal(guild.id)}
         />
     );
+    group.push(
+        <Menu.MenuItem
+            id="vc-bulk-export-servers"
+            label="Bulk Export Servers…"
+            action={() => openBulkServerExportModal(guild.id)}
+        />
+    );
 };
 
 export default definePlugin({
     name: "ChatExporter",
-    description: "Export messages from any channel, DM, group chat, or entire server as HTML or JSON files",
+    description: "Export messages from any channel, DM, group chat, or entire server (one or many servers at once) as HTML or JSON files",
     authors: [Devs.UnknownHacker9991],
 
     contextMenus: {

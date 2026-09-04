@@ -19,6 +19,23 @@ function FolderEditRow({ folder }: { folder: Folder; }) {
     const [name, setName] = useState(folder.name);
     const [color, setColor] = useState(folder.color);
 
+    // Typing a name / dragging the colour picker used to persist to storage and
+    // notify every subscriber on EVERY keystroke/move. Keep the inputs instant
+    // (local state) and write once, shortly after the user stops; flush on
+    // unmount so closing the modal mid-edit never loses the change.
+    const pending = React.useRef<Partial<Folder> | null>(null);
+    const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+    const flush = React.useCallback(() => {
+        if (timer.current) { clearTimeout(timer.current); timer.current = null; }
+        if (pending.current) { updateFolder(folder.id, pending.current); pending.current = null; }
+    }, [folder.id]);
+    const queueUpdate = React.useCallback((patch: Partial<Folder>) => {
+        pending.current = { ...(pending.current ?? {}), ...patch };
+        if (timer.current) clearTimeout(timer.current);
+        timer.current = setTimeout(flush, 400);
+    }, [flush]);
+    React.useEffect(() => flush, [flush]);
+
     return (
         <div className="vc-dmorg-settings-row">
             <div
@@ -30,7 +47,7 @@ function FolderEditRow({ folder }: { folder: Folder; }) {
                     value={color}
                     onChange={e => {
                         setColor(e.target.value);
-                        updateFolder(folder.id, { color: e.target.value });
+                        queueUpdate({ color: e.target.value });
                     }}
                     className="vc-dmorg-settings-color-input"
                 />
@@ -39,7 +56,7 @@ function FolderEditRow({ folder }: { folder: Folder; }) {
                 value={name}
                 onChange={val => {
                     setName(val);
-                    updateFolder(folder.id, { name: val });
+                    queueUpdate({ name: val });
                 }}
                 style={{ flex: 1 }}
             />

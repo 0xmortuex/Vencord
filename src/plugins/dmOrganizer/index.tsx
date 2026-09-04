@@ -298,7 +298,27 @@ export default definePlugin({
         });
     },
 
+    // Discord's list calls this once per rendered ROW (via isChannelHidden and
+    // renderChannel), so a folder's channel list was filtered + re-sorted from
+    // the full DM list for every row — O(rows × DMs) per render. Cache the
+    // result per folder for the duration of the current synchronous render
+    // pass; the cache self-clears on the next microtask, so it can never be
+    // stale across tasks (store/flux updates always land in a later task).
+    _fcCache: new Map<string, string[]>(),
+    _fcClearQueued: false,
     getFolderChannels(folder: Folder): string[] {
+        const hit = this._fcCache.get(folder.id);
+        if (hit) return hit;
+        const result = this._computeFolderChannels(folder);
+        this._fcCache.set(folder.id, result);
+        if (!this._fcClearQueued) {
+            this._fcClearQueued = true;
+            queueMicrotask(() => { this._fcCache.clear(); this._fcClearQueued = false; });
+        }
+        return result;
+    },
+
+    _computeFolderChannels(folder: Folder): string[] {
         if (folder.dmIds.length === 0) return [];
         const sortedChannels = PrivateChannelSortStore.getPrivateChannelIds();
         const { priorities } = getData();

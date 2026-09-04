@@ -119,6 +119,8 @@ export function generateId(): string {
 // The in-memory arrays are the synchronous source of truth; DataStore is
 // write-behind persistence (same pattern as dmOrganizer's store).
 async function persistSchedules() {
+    // Any change to the schedule set re-arms the exact next-run timer.
+    armNextRun();
     await DataStore.set(SCHEDULES_KEY, schedules);
     notify();
 }
@@ -130,6 +132,7 @@ async function persistPresets() {
 
 export async function loadAll() {
     schedules = (await DataStore.get<ExportSchedule[]>(SCHEDULES_KEY)) ?? [];
+    armNextRun();
     presets = (await DataStore.get<SchedulePreset[]>(PRESETS_KEY)) ?? [];
     // Recompute stale nextRunAt values (schema additions, clock changes).
     for (const s of schedules) {
@@ -243,19 +246,42 @@ export function reportRunProgress(detail: string, done = 0, total = 0) {
 }
 
 let tickInterval: ReturnType<typeof setInterval> | null = null;
+let nextRunTimer: ReturnType<typeof setTimeout> | null = null;
 let running = false;
+let schedulerActive = false;
+
+// Fire exactly when the soonest enabled schedule is due, instead of waking up
+// every 30 s forever to ask "anything due?". Re-armed whenever the schedule set
+// changes (persistSchedules) and after a run. A slow 5-minute poll remains as a
+// safety net (e.g. clock changes / sleep-wake) but does no work when idle.
+function armNextRun() {
+    if (nextRunTimer) { clearTimeout(nextRunTimer); nextRunTimer = null; }
+    if (!schedulerActive) return;
+    let soonest = Infinity;
+    for (const s of schedules) if (s.enabled && s.nextRunAt < soonest) soonest = s.nextRunAt;
+    if (!Number.isFinite(soonest)) return;
+    const delay = Math.min(2_147_483_647, Math.max(1_000, soonest - Date.now()));
+    nextRunTimer = setTimeout(() => { nextRunTimer = null; tick(); }, delay);
+}
 
 export function startScheduler() {
-    tickInterval = setInterval(tick, 30_000);
+    schedulerActive = true;
+    tickInterval = setInterval(tick, 5 * 60_000);
     // Catch up on runs missed while Discord was closed. Small delay so stores
     // (channels, members) are populated before the first export fires.
     setTimeout(tick, 15_000);
+    armNextRun();
 }
 
 export function stopScheduler() {
+    schedulerActive = false;
     if (tickInterval) {
         clearInterval(tickInterval);
         tickInterval = null;
+    }
+    if (nextRunTimer) {
+        clearTimeout(nextRunTimer);
+        nextRunTimer = null;
     }
 }
 

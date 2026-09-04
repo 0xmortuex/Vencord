@@ -227,6 +227,10 @@ interface ServerExportParams {
     format: "html" | "json";
     messageLimit: number | null;
     combineFiles: boolean;
+    /** When set (bulk "one file for everything"), the whole server is built into one
+     * string and handed back here INSTEAD of being saved, so the caller can merge every
+     * server into a single file. */
+    onCombinedContent?: (guildName: string, content: string, format: "html" | "json") => void;
     /** Only export messages newer than this (ISO date/time). Used by AutoExport's incremental runs. */
     startDate?: string | null;
     resumeFromCheckpoint?: boolean;
@@ -251,6 +255,7 @@ export function startServerExport(params: ServerExportParams) {
     const messageLimit = checkpoint ? checkpoint.messageLimit : params.messageLimit;
     const combineFiles = checkpoint ? checkpoint.combineFiles : params.combineFiles;
     const startDate = checkpoint ? checkpoint.startDate : (params.startDate ?? null);
+    const { onCombinedContent } = params;
 
     // Checkpoints only make sense when each channel is saved to disk as it
     // finishes. With combineFiles the messages are held in memory and written in
@@ -428,10 +433,10 @@ export function startServerExport(params: ServerExportParams) {
         if (combineFiles) {
             const bytesPerMsg = format === "json" ? 1500 : 2500;
             const estimatedBytes = totalMessageCount * bytesPerMsg;
-            const MAX_COMBINED_BYTES = 400 * 1024 * 1024; // 400 MB
+            const MAX_COMBINED_BYTES = 1500 * 1024 * 1024; // ~1.5 GB estimate; the real file is far smaller (2500 B/msg is very pessimistic)
             let useCombined = true;
 
-            if (estimatedBytes > MAX_COMBINED_BYTES) {
+            if (!onCombinedContent && estimatedBytes > MAX_COMBINED_BYTES) {
                 const sizeMB = Math.round(estimatedBytes / (1024 * 1024));
                 showToast(
                     `Export too large to combine (${sizeMB} MB estimated). Falling back to per-channel files.`,
@@ -442,29 +447,54 @@ export function startServerExport(params: ServerExportParams) {
 
             if (useCombined) {
                 try {
+                    let content: string;
                     if (format === "json") {
                         const combined: Record<string, any[]> = {};
                         for (const exp of allExports) {
                             if (exp.messages) combined[exp.channelName] = exp.messages;
                         }
-                        saveFile(new File([JSON.stringify(combined, null, 2)], `${safeName}-${date}.json`, { type: "application/json" }));
+                        content = JSON.stringify(combined, null, 2);
                     } else {
                         const parts: string[] = [];
                         for (const exp of allExports) {
                             if (!exp.messages) continue;
                             parts.push(renderHtml(exp.messages, exp.channelName, guildName));
                         }
-                        saveFile(new File([parts.join("\n\n")], `${safeName}-${date}.html`, { type: "text/html" }));
+                        content = parts.join("\n\n");
+                    }
+                    if (onCombinedContent) {
+                        // Bulk "one file for everything": hand this server’s whole
+                        // content back to the caller to merge, instead of saving it here.
+                        onCombinedContent(guildName, content, format);
+                    } else {
+                        const ext = format === "json" ? "json" : "html";
+                        const mime = format === "json" ? "application/json" : "text/html";
+                        saveFile(new File([content], `${safeName}-${date}.${ext}`, { type: mime }));
                     }
                     // Free memory only after the combined file has been handed off
                     for (const exp of allExports) exp.messages = null;
                 } catch (e: any) {
                     if (e instanceof RangeError) {
-                        showToast(
-                            "Export too large for single file. Try unchecking 'Combine all channels into one file'.",
-                            Toasts.Type.FAILURE,
-                        );
-                        useCombined = false;
+                        if (onCombinedContent) {
+                            // Too large to merge into the single "everything" file — save
+                            // this one server on its own (per channel) so it isn't lost.
+                            showToast(
+                                `${guildName} is too large to merge — saved as its own files.`,
+                                Toasts.Type.MESSAGE,
+                            );
+                            for (const exp of allExports) {
+                                if (exp.messages) { try { saveChannelToDisk(exp.channelName, exp.messages); } catch {} }
+                                exp.messages = null;
+                            }
+                            // handled here — leave useCombined true so the per-channel
+                            // block below doesn't run again
+                        } else {
+                            showToast(
+                                "Export too large for single file. Falling back to per-channel files.",
+                                Toasts.Type.FAILURE,
+                            );
+                            useCombined = false;
+                        }
                     } else {
                         throw e;
                     }

@@ -25,6 +25,7 @@ import {
     cacheMessage,
     cleanOldEntries,
     clearMemoryCache,
+    flushDeletedMessages,
     getCachedMessage,
     getCacheStats,
     loadCacheFromDisk,
@@ -55,8 +56,8 @@ export const settings = definePluginSettings({
     },
     maxCachedPerGuild: {
         type: OptionType.NUMBER,
-        description: "Max cached messages per guild",
-        default: 10000,
+        description: "Max recent messages kept in memory per server (rolling window used to reconstruct deletes). Higher = more RAM. 2000 catches virtually every delete; raise only if you see misses.",
+        default: 2000,
     },
     daysToKeep: {
         type: OptionType.NUMBER,
@@ -479,6 +480,7 @@ export default definePlugin({
         }
 
         // Persist before stopping
+        flushDeletedMessages().catch(e => logger.error("Error flushing deleted log on stop", e));
         persistCacheToDisk().catch(e => logger.error("Error persisting on stop", e));
         clearMemoryCache();
     },
