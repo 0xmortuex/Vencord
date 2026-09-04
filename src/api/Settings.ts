@@ -132,6 +132,35 @@ const DefaultSettings: Settings = {
 const settings = !IS_REPORTER ? VencordNative.settings.get() : {} as Settings;
 mergeDefaults(settings, DefaultSettings);
 
+// Built-ins this build ships turned on. `enabledByDefault` is only consulted by
+// getDefaultValue for keys that DON'T exist yet, so an existing profile - which
+// already has an entry for every plugin - never picks it up. Flip them once here
+// and record a marker, so this runs a single time and a later manual off-toggle
+// is respected. Done before SettingsStore is built so patches apply this launch.
+const ENABLE_BY_DEFAULT_ONCE = [
+    "AlwaysAnimate", "AlwaysExpandRoles", "BetterRoleContext", "BetterSessions",
+    "BiggerStreamPreview", "ClearURLs", "CustomRPC", "CustomIdle",
+    "DontRoundMyTimestamps", "FriendsSince", "FullSearchContext", "IrcColors",
+    "PinDMs", "PreviewMessage", "SilentTyping", "ValidUser", "WhoReacted",
+];
+if (!IS_REPORTER) {
+    try {
+        const marker = "enabledDefaultsRun_v1";
+        const meta = settings as any;
+        if (!meta[marker]) {
+            settings.plugins ??= {} as any;
+            for (const name of ENABLE_BY_DEFAULT_ONCE) {
+                const p = ((settings.plugins as any)[name] ??= {});
+                p.enabled = true;
+            }
+            meta[marker] = true;
+            VencordNative.settings.set(settings);
+        }
+    } catch (e) {
+        console.error("[Vencord] failed to apply default-on plugins", e);
+    }
+}
+
 export const SettingsStore = new SettingsStoreClass(settings, {
     readOnly: true,
     getDefaultValue({
