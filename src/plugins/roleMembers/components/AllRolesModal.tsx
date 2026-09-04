@@ -5,6 +5,7 @@
  */
 
 import ErrorBoundary from "@components/ErrorBoundary";
+import { VirtualList } from "@components/VirtualList";
 import { ModalCloseButton, ModalContent, ModalHeader, ModalProps, ModalRoot, ModalSize, openModal } from "@utils/modal";
 import { FluxDispatcher, GuildMemberStore, GuildRoleStore, GuildStore, Text, TextInput, useEffect, useMemo, useRef, UserStore, useState, useStateFromStores } from "@webpack/common";
 
@@ -52,6 +53,7 @@ function MemberRow({ userId, nick, joinedAt, guildId }: { userId: string; nick: 
             }}
         >
             <img
+                loading="lazy"
                 src={user.getAvatarURL(guildId, 32, false)}
                 width={32}
                 height={32}
@@ -336,15 +338,14 @@ function AllRolesModalComponent({ guildId, modalProps }: { guildId: string; moda
                                 </Text>
                             </div>
                         ) : (
-                            filteredMembers.map(({ userId, nick, joinedAt }) => (
+                            <VirtualList items={filteredMembers} rowHeight={52} height={420} keyOf={m => m.userId} renderRow={({ userId, nick, joinedAt }) => (
                                 <MemberRow
-                                    key={userId}
                                     userId={userId}
                                     nick={nick}
                                     joinedAt={joinedAt}
                                     guildId={guildId}
                                 />
-                            ))
+                            )} />
                         )}
                     </div>
                 )}

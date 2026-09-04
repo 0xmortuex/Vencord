@@ -116,6 +116,15 @@ export async function loadCacheFromDisk() {
 // deletes queue up and are flushed in one transaction shortly after, so a
 // burst of N deletes costs one rewrite instead of N. Every reader/other writer
 // flushes the queue first so the log is always consistent.
+// Listeners for "the deleted log changed" so an open Ghost Messages modal can
+// refresh live instead of only reading once on open.
+const deletedListeners = new Set<() => void>();
+export function subscribeDeleted(fn: () => void): () => void {
+    deletedListeners.add(fn);
+    return () => { deletedListeners.delete(fn); };
+}
+function notifyDeleted() { for (const fn of deletedListeners) { try { fn(); } catch { } } }
+
 const pendingAdds: DeletedMessage[] = [];
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 let flushing: Promise<void> | null = null;
@@ -131,7 +140,7 @@ async function flushPendingAdds(): Promise<void> {
         list.push(...batch);
         if (list.length > MAX_DELETED) list.splice(0, list.length - MAX_DELETED);
         return list;
-    }).then(() => { flushing = null; }, e => { flushing = null; throw e; });
+    }).then(() => { flushing = null; notifyDeleted(); }, e => { flushing = null; throw e; });
     return flushing;
 }
 
@@ -149,6 +158,17 @@ export async function removeDeletedMessage(messageId: string) {
     await flushPendingAdds();
     await DataStore.update<DeletedMessage[]>(DELETED_KEY, deleted =>
         (deleted ?? []).filter(m => m.id !== messageId));
+    notifyDeleted();
+}
+
+/** Remove many entries in ONE transaction (the modal's "Remove shown"). */
+export async function removeDeletedMessages(ids: Iterable<string>) {
+    const set = new Set(ids);
+    if (!set.size) return;
+    await flushPendingAdds();
+    await DataStore.update<DeletedMessage[]>(DELETED_KEY, deleted =>
+        (deleted ?? []).filter(m => !set.has(m.id)));
+    notifyDeleted();
 }
 
 export async function cleanOldEntries(maxDays: number) {
@@ -156,6 +176,7 @@ export async function cleanOldEntries(maxDays: number) {
     const cutoff = Date.now() - maxDays * 24 * 60 * 60 * 1000;
     await DataStore.update<DeletedMessage[]>(DELETED_KEY, deleted =>
         (deleted ?? []).filter(m => m.deletedAt > cutoff));
+    notifyDeleted();
 }
 
 export async function clearDeletedMessages() {
@@ -163,6 +184,7 @@ export async function clearDeletedMessages() {
     pendingAdds.length = 0;
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
     await DataStore.set(DELETED_KEY, []);
+    notifyDeleted();
 }
 
 /** Flush any queued deletes now (used on plugin stop so nothing is lost). */

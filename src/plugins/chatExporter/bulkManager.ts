@@ -45,6 +45,9 @@ export interface BulkExportJob {
 const SERVER_COOLDOWN_MS = 4000;
 
 let bulkJob: BulkExportJob | null = null;
+// Read through a function: TS otherwise keeps a stale narrowing of the
+// module-level bulkJob across the awaits in the export loop.
+function bulkCancelled(): boolean { return !bulkJob || bulkJob.status === "cancelled"; }
 const listeners = new Set<() => void>();
 
 function notify() { for (const fn of listeners) fn(); }
@@ -120,7 +123,7 @@ export function startBulkExport(params: BulkExportParams) {
         // here (instead of saving), and we write a single merged file at the end.
         const merged: Array<{ name: string; content: string; }> = [];
         for (let i = 0; i < params.targets.length; i++) {
-            if (!bulkJob || bulkJob.status === "cancelled") return;
+            if (bulkCancelled()) return;
             const t = params.targets[i];
             bulkJob.index = i;
             bulkJob.currentGuildId = t.id;
@@ -150,7 +153,7 @@ export function startBulkExport(params: BulkExportParams) {
             });
 
             const result = await waitForServer(t.id);
-            if (!bulkJob || bulkJob.status === "cancelled") return;
+            if (bulkCancelled()) return;
             if (result === "error") bulkJob.failed.push(t.name);
             bulkJob.done++;
             notify();
@@ -159,7 +162,7 @@ export function startBulkExport(params: BulkExportParams) {
         }
 
         // "One file for everything": merge every collected server into a single file.
-        if (params.combineMode === "all" && merged.length && bulkJob && bulkJob.status !== "cancelled") {
+        if (params.combineMode === "all" && merged.length && !bulkCancelled()) {
             const stamp = new Date().toISOString().split("T")[0];
             const esc = (n: string) => n.replace(/[&<>]/g, c => (c === "&" ? "&amp;" : c === "<" ? "&lt;" : "&gt;"));
             try {

@@ -4,11 +4,13 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import { VirtualList } from "@components/VirtualList";
 import { getChannelLabel } from "@plugins/messageLoggerEnhanced";
-import { clearDeletedMessages, DeletedMessage, getCacheStats, getDeletedMessages, removeDeletedMessage } from "@plugins/messageLoggerEnhanced/store";
+import { clearDeletedMessages, DeletedMessage, getCacheStats, getDeletedMessages, removeDeletedMessage, removeDeletedMessages, subscribeDeleted } from "@plugins/messageLoggerEnhanced/store";
 import { classNameFactory } from "@utils/css";
 import { ModalCloseButton, ModalContent, ModalFooter, ModalHeader, ModalProps, ModalRoot, ModalSize } from "@utils/modal";
-import { Alerts, Button, GuildStore, NavigationRouter, Select, Text, useEffect, useMemo, useState } from "@webpack/common";
+import { saveFile } from "@utils/web";
+import { Alerts, Button, GuildStore, NavigationRouter, Select, showToast, Text, Toasts, useEffect, useMemo, useState } from "@webpack/common";
 
 const cl = classNameFactory("vc-mlenhanced-");
 
@@ -44,10 +46,15 @@ export function GhostMessagesModal({ modalProps, initialChannelId }: GhostMessag
     const [filterGuild, setFilterGuild] = useState("");
     const [filterChannel, setFilterChannel] = useState(initialChannelId ?? "");
     const [filterUser, setFilterUser] = useState("");
+    const [filterContent, setFilterContent] = useState("");
+    const [dateFrom, setDateFrom] = useState("");
+    const [dateTo, setDateTo] = useState("");
     const [sortOrder, setSortOrder] = useState<"newest" | "oldest">("newest");
 
     useEffect(() => {
         getDeletedMessages().then(setMessages);
+        // Refresh live: ghost deletes that arrive while the modal is open show up.
+        return subscribeDeleted(() => { getDeletedMessages().then(setMessages); });
     }, []);
 
     const allGuilds = useMemo(() => {
@@ -89,12 +96,28 @@ export function GhostMessagesModal({ modalProps, initialChannelId }: GhostMessag
             result = result.filter(m => m.authorUsername.toLowerCase().includes(q));
         }
 
+        if (filterContent.trim()) {
+            const q = filterContent.toLowerCase();
+            result = result.filter(m =>
+                m.content.toLowerCase().includes(q) ||
+                m.attachments.some(a => a.filename.toLowerCase().includes(q)));
+        }
+
+        if (dateFrom) {
+            const from = new Date(dateFrom).getTime();
+            if (Number.isFinite(from)) result = result.filter(m => m.deletedAt >= from);
+        }
+        if (dateTo) {
+            const to = new Date(dateTo).getTime() + 24 * 60 * 60 * 1000; // inclusive day
+            if (Number.isFinite(to)) result = result.filter(m => m.deletedAt < to);
+        }
+
         result.sort((a, b) =>
             sortOrder === "newest" ? b.deletedAt - a.deletedAt : a.deletedAt - b.deletedAt
         );
 
         return result;
-    }, [messages, filterGuild, filterChannel, filterUser, sortOrder]);
+    }, [messages, filterGuild, filterChannel, filterUser, filterContent, dateFrom, dateTo, sortOrder]);
 
     async function handleDelete(id: string) {
         await removeDeletedMessage(id);
@@ -104,6 +127,28 @@ export function GhostMessagesModal({ modalProps, initialChannelId }: GhostMessag
     async function handleClearAll() {
         await clearDeletedMessages();
         setMessages([]);
+    }
+    async function handleRemoveShown() {
+        const ids = filtered.map(m => m.id);
+        await removeDeletedMessages(ids);
+        const gone = new Set(ids);
+        setMessages(prev => prev.filter(m => !gone.has(m.id)));
+        showToast(`Removed ${ids.length} ghost message${ids.length === 1 ? "" : "s"}`, Toasts.Type.SUCCESS);
+    }
+    function exportShown(format: "json" | "txt") {
+        const stamp = new Date().toISOString().split("T")[0];
+        if (format === "json") {
+            saveFile(new File([JSON.stringify(filtered, null, 2)], `ghost-messages-${stamp}.json`, { type: "application/json" }));
+        } else {
+            const lines = filtered.map(m => {
+                const guild = m.guildId ? GuildStore.getGuild(m.guildId)?.name ?? m.guildId : "Direct Messages";
+                const where = `${guild} / ${getChannelLabel(m.channelId)}`;
+                const att = m.attachments.length ? `\n  [attachments: ${m.attachments.map(a => a.filename).join(", ")}]` : "";
+                return `[${formatTimestamp(m.timestamp)}] ${m.authorUsername} in ${where} (deleted ${formatTimestamp(m.deletedAt)})\n  ${m.content || "(no text content)"}${att}`;
+            });
+            saveFile(new File([lines.join("\n\n")], `ghost-messages-${stamp}.txt`, { type: "text/plain" }));
+        }
+        showToast(`Exported ${filtered.length} ghost message${filtered.length === 1 ? "" : "s"}`, Toasts.Type.SUCCESS);
     }
 
     function jumpToChannel(msg: DeletedMessage) {
@@ -152,6 +197,22 @@ export function GhostMessagesModal({ modalProps, initialChannelId }: GhostMessag
                     onChange={e => setFilterUser(e.target.value)}
                     className={cl("search")}
                 />
+                <input
+                    type="text"
+                    placeholder="Search message text / attachment names..."
+                    value={filterContent}
+                    onChange={e => setFilterContent(e.target.value)}
+                    className={cl("search")}
+                />
+                <div className={cl("filter-row")} style={{ alignItems: "center", gap: "8px" }}>
+                    <Text variant="text-xs/normal" style={{ color: "var(--text-muted)" }}>Deleted between</Text>
+                    <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className={cl("search")} style={{ width: "auto" }} />
+                    <Text variant="text-xs/normal" style={{ color: "var(--text-muted)" }}>and</Text>
+                    <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className={cl("search")} style={{ width: "auto" }} />
+                    {(dateFrom || dateTo) && (
+                        <Button size={Button.Sizes.TINY} look={Button.Looks.LINK} onClick={() => { setDateFrom(""); setDateTo(""); }}>Clear dates</Button>
+                    )}
+                </div>
 
                 <div className={cl("filter-row")}>
                     <Select
@@ -192,7 +253,7 @@ export function GhostMessagesModal({ modalProps, initialChannelId }: GhostMessag
                             : "No messages match your filters."}
                     </div>
                 ) : (
-                    filtered.map(msg => {
+                    <VirtualList items={filtered} rowHeight={150} height={460} keyOf={m => m.id + m.deletedAt} renderRow={msg => {
                         const guild = msg.guildId ? GuildStore.getGuild(msg.guildId) : null;
                         const channelLabel = getChannelLabel(msg.channelId);
                         const guildName = guild?.name ?? "Direct Messages";
@@ -204,6 +265,7 @@ export function GhostMessagesModal({ modalProps, initialChannelId }: GhostMessag
                                         <img
                                             src={msg.authorAvatar}
                                             alt=""
+                                            loading="lazy"
                                             className={cl("avatar")}
                                         />
                                     )}
@@ -264,12 +326,38 @@ export function GhostMessagesModal({ modalProps, initialChannelId }: GhostMessag
                                 </div>
                             </div>
                         );
-                    })
+                    }} />
                 )}
             </ModalContent>
 
             <ModalFooter>
                 <div className={cl("footer")}>
+                    {filtered.length > 0 && (
+                        <>
+                            <Button look={Button.Looks.LINK} color={Button.Colors.PRIMARY} onClick={() => exportShown("json")}>
+                                Export JSON ({filtered.length})
+                            </Button>
+                            <Button look={Button.Looks.LINK} color={Button.Colors.PRIMARY} onClick={() => exportShown("txt")}>
+                                Export TXT
+                            </Button>
+                            {filtered.length < messages.length && (
+                                <Button
+                                    look={Button.Looks.LINK}
+                                    color={Button.Colors.RED}
+                                    onClick={() => Alerts.show({
+                                        title: "Remove Shown Ghost Messages",
+                                        body: `Remove the ${filtered.length} entries matching your current filters?`,
+                                        confirmText: "Remove shown",
+                                        confirmColor: "vc-notification-log-danger-btn",
+                                        cancelText: "Cancel",
+                                        onConfirm: handleRemoveShown,
+                                    })}
+                                >
+                                    Remove shown ({filtered.length})
+                                </Button>
+                            )}
+                        </>
+                    )}
                     {messages.length > 0 && (
                         <Button
                             look={Button.Looks.LINK}

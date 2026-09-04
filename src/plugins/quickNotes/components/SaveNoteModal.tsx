@@ -8,17 +8,21 @@ import { classNameFactory } from "@utils/css";
 import { ModalCloseButton, ModalContent, ModalFooter, ModalHeader, ModalProps, ModalRoot, ModalSize } from "@utils/modal";
 import { Button, Text, useState } from "@webpack/common";
 
+import { presetTagList } from "..";
+
 const cl = classNameFactory("vc-quicknotes-");
 
-const PRESET_TAGS = ["Important", "TODO", "CUSA", "Reference"];
 
 interface SaveNoteModalProps {
     modalProps: ModalProps;
-    onSave: (tag: string) => void;
+    onSave: (tag: string, note: string) => void;
 }
 
 export function SaveNoteModal({ modalProps, onSave }: SaveNoteModalProps) {
     const [tag, setTag] = useState("");
+    const [noteText, setNoteText] = useState("");
+    const PRESET_TAGS = presetTagList();
+    const save = () => { onSave(tag.trim(), noteText.trim()); modalProps.onClose(); };
 
     return (
         <ModalRoot {...modalProps} size={ModalSize.SMALL}>
@@ -40,6 +44,8 @@ export function SaveNoteModal({ modalProps, onSave }: SaveNoteModalProps) {
                         placeholder="Enter a tag..."
                         value={tag}
                         onChange={e => setTag(e.target.value)}
+                        onKeyDown={e => { if (e.key === "Enter") save(); }}
+                        autoFocus
                         className={cl("tag-input")}
                     />
 
@@ -55,15 +61,23 @@ export function SaveNoteModal({ modalProps, onSave }: SaveNoteModalProps) {
                             </button>
                         ))}
                     </div>
+                    <Text variant="text-md/medium" className={cl("save-label")} style={{ marginTop: "12px" }}>
+                        Your note (optional)
+                    </Text>
+                    <textarea
+                        placeholder="Why are you saving this?"
+                        value={noteText}
+                        onChange={e => setNoteText(e.target.value)}
+                        rows={3}
+                        className={cl("tag-input")}
+                        style={{ resize: "vertical", fontFamily: "inherit" }}
+                    />
                 </div>
             </ModalContent>
 
             <ModalFooter>
                 <Button
-                    onClick={() => {
-                        onSave(tag.trim());
-                        modalProps.onClose();
-                    }}
+                    onClick={save}
                 >
                     Save Note
                 </Button>

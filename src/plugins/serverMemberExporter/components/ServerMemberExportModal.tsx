@@ -640,7 +640,7 @@ export function ServerMemberExportModal({ modalProps, guildId, guildName }: Serv
                                                 disabled={isExporting}
                                                 style={{ width: "16px", height: "16px", accentColor: "#5865f2" }}
                                             />
-                                            <img src={m.avatarUrl} alt="" style={{ width: "24px", height: "24px", borderRadius: "50%" }} />
+                                            <img src={m.avatarUrl} alt="" loading="lazy" style={{ width: "24px", height: "24px", borderRadius: "50%" }} />
                                             <span style={{ color: "#dbdee1", flex: 1 }}>
                                                 {memberDisplayName(m)}
                                                 <span style={{ color: "#949ba4", fontSize: "12px" }}> @{m.username}</span>

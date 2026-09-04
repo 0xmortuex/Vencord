@@ -9,11 +9,12 @@ import "./style.css";
 import { ChatBarButton } from "@api/ChatButtons";
 import { findGroupChildrenByChildId, NavContextMenuPatchCallback } from "@api/ContextMenu";
 import { DataStore } from "@api/index";
+import { definePluginSettings } from "@api/Settings";
 import { Devs } from "@utils/constants";
 import { openModal } from "@utils/modal";
-import definePlugin from "@utils/types";
+import definePlugin, { OptionType } from "@utils/types";
 import type { Message } from "@vencord/discord-types";
-import { ChannelStore, GuildStore, IconUtils, Menu, UserStore } from "@webpack/common";
+import { ChannelStore, GuildStore, IconUtils, Menu, showToast, Toasts, UserStore } from "@webpack/common";
 
 import { NotesModal } from "./components/NotesModal";
 import { SaveNoteModal } from "./components/SaveNoteModal";
@@ -32,7 +33,26 @@ export interface Note {
     authorAvatar: string;
     content: string;
     tag: string;
+    /** Your own annotation ("why I saved this"), optional. */
+    note?: string;
     savedAt: number;
+}
+
+export const settings = definePluginSettings({
+    presetTags: {
+        type: OptionType.STRING,
+        description: "Preset tags offered when saving a note (comma-separated)",
+        default: "Important, TODO, Reference",
+    },
+    maxNotes: {
+        type: OptionType.NUMBER,
+        description: "Maximum notes to keep - the oldest are dropped past this (0 = unlimited)",
+        default: 500,
+    },
+});
+
+export function presetTagList(): string[] {
+    return String(settings.store.presetTags ?? "").split(",").map(s => s.trim()).filter(Boolean);
 }
 
 function generateId(): string {
@@ -45,8 +65,12 @@ async function saveNote(note: Note) {
     await DataStore.update<Note[]>(STORAGE_KEY, notes => {
         const list = notes ?? [];
         list.push(note);
+        // Cap the list so it can't grow forever (it previously never did).
+        const max = Number(settings.store.maxNotes);
+        if (Number.isFinite(max) && max > 0 && list.length > max) list.splice(0, list.length - max);
         return list;
     });
+    showToast("Note saved", Toasts.Type.SUCCESS);
 }
 
 function openNotesModal() {
@@ -61,7 +85,7 @@ function openSaveNoteModal(message: Message) {
     openModal(modalProps => (
         <SaveNoteModal
             modalProps={modalProps}
-            onSave={tag => {
+            onSave={(tag, noteText) => {
                 saveNote({
                     id: generateId(),
                     messageId: message.id,
@@ -74,6 +98,7 @@ function openSaveNoteModal(message: Message) {
                     authorAvatar: author ? IconUtils.getUserAvatarURL(author, false, 64) : "",
                     content: message.content ?? "",
                     tag,
+                    note: noteText || undefined,
                     savedAt: Date.now(),
                 });
             }}
@@ -142,6 +167,7 @@ export default definePlugin({
     name: "QuickNotes",
     description: "Save messages as notes with tags and view them anytime from a notes panel.",
     authors: [Devs.UnknownHacker9991],
+    settings,
     dependencies: ["ChatInputButtonAPI"],
 
     contextMenus: {

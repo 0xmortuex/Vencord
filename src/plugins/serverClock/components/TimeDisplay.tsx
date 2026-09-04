@@ -14,6 +14,17 @@ interface TimeDisplayProps {
     timezoneName: string;
     use24Hour: boolean;
     small?: boolean;
+    /** [start, end) hours considered "night" for them; null = no highlight. */
+    nightRange?: [number, number] | null;
+}
+
+function localHourOf(utcOffset: number): number {
+    const now = new Date();
+    const utcMs = now.getTime() + now.getTimezoneOffset() * 60000;
+    return new Date(utcMs + utcOffset * 3600000).getHours();
+}
+function isNightHour(h: number, [s, e]: [number, number]): boolean {
+    return s <= e ? (h >= s && h < e) : (h >= s || h < e);
 }
 
 // One shared minute ticker for every visible clock. Previously each rendered
@@ -64,8 +75,9 @@ function formatTime(utcOffset: number, use24Hour: boolean): string {
     return `${h12}:${minutes} ${period}`;
 }
 
-export function TimeDisplay({ utcOffset, timezoneName, use24Hour, small }: TimeDisplayProps) {
+export function TimeDisplay({ utcOffset, timezoneName, use24Hour, small, nightRange }: TimeDisplayProps) {
     const [time, setTime] = React.useState(() => formatTime(utcOffset, use24Hour));
+    const night = !!nightRange && isNightHour(localHourOf(utcOffset), nightRange);
 
     React.useEffect(() => {
         setTime(formatTime(utcOffset, use24Hour));
@@ -86,16 +98,16 @@ export function TimeDisplay({ utcOffset, timezoneName, use24Hour, small }: TimeD
     }
 
     const isAbbreviation = !/^(?:GMT|UTC)/i.test(timezoneName);
-    const tooltipText = isAbbreviation ? `${timezoneName} (${utcLabel})` : utcLabel;
+    const tooltipText = (isAbbreviation ? `${timezoneName} (${utcLabel})` : utcLabel) + (night ? " · night for them" : "");
 
     return (
         <Tooltip text={tooltipText}>
             {tooltipProps => (
                 <span
                     {...tooltipProps}
-                    className={cl("time", { small: !!small })}
+                    className={cl("time", { small: !!small, night })}
                 >
-                    {"🕐"} {time}
+                    {night ? "🌙" : "🕐"} {time}
                 </span>
             )}
         </Tooltip>

@@ -22,3 +22,8 @@
     gap: 4px;
     margin-top: 4px;
 }
+
+/* Night for them: dim so you notice before you ping. */
+.vc-serverclock-night {
+    opacity: 0.6;
+}

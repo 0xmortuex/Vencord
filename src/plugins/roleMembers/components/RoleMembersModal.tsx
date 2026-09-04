@@ -182,6 +182,7 @@ function MemberRow({ userId, nick, joinedAt, guildId }: { userId: string; nick: 
             }}
         >
             <img
+                loading="lazy"
                 src={user.getAvatarURL(guildId, 32, false)}
                 width={32}
                 height={32}

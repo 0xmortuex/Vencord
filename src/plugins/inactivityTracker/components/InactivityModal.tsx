@@ -5,9 +5,11 @@
  */
 
 import { DataStore } from "@api/index";
+import { VirtualList } from "@components/VirtualList";
 import { classNameFactory } from "@utils/css";
 import { ModalCloseButton, ModalContent, ModalHeader, ModalProps, ModalRoot, ModalSize, openModal } from "@utils/modal";
-import { Button, FluxDispatcher, GuildMemberStore, GuildRoleStore, GuildStore, Select, Text, Tooltip, useEffect, useMemo, UserStore, useState } from "@webpack/common";
+import { saveFile } from "@utils/web";
+import { Button, FluxDispatcher, GuildMemberStore, GuildRoleStore, GuildStore, Select, showToast, Text, Toasts, Tooltip, useEffect, useMemo, UserStore, useState } from "@webpack/common";
 
 import { STORAGE_KEY, TrackerData } from "..";
 
@@ -19,6 +21,7 @@ const THRESHOLD_OPTIONS = [
     { label: "14 days", value: 14 },
     { label: "30 days", value: 30 },
     { label: "60 days", value: 60 },
+    { label: "Custom…", value: -1 },
 ];
 
 interface MemberEntry {
@@ -112,20 +115,28 @@ function buildMemberList(guildId: string, data: TrackerData): MemberEntry[] {
     return entries;
 }
 
-function exportCsv(members: MemberEntry[]) {
-    const rows = ["name,last_seen,days_inactive"];
+function exportCsv(members: MemberEntry[], guildName: string) {
+    const q = (s: string) => '"' + String(s ?? "").replace(/"/g, '""') + '"';
+    const rows = ["name,username,user_id,top_role,last_seen,days_inactive"];
     for (const m of members) {
-        const name = m.displayName.replace(/"/g, '""');
         const lastSeen = m.lastSeen ? new Date(m.lastSeen).toISOString().split("T")[0] : "Never";
         const days = m.daysInactive !== null ? String(m.daysInactive) : "N/A";
-        rows.push(`"${name}",${lastSeen},${days}`);
+        rows.push([q(m.displayName), q(m.username), m.userId, q(m.topRoleName ?? ""), lastSeen, days].join(","));
     }
-    navigator.clipboard.writeText(rows.join("\n"));
+    const stamp = new Date().toISOString().split("T")[0];
+    const safe = guildName.replace(/[^a-zA-Z0-9-_]/g, "_");
+    saveFile(new File([rows.join("\n")], `inactive-${safe}-${stamp}.csv`, { type: "text/csv" }));
+    showToast(`Downloaded CSV with ${members.length} member${members.length === 1 ? "" : "s"}`, Toasts.Type.SUCCESS);
 }
 
 function InactivityModalComponent({ guildId, modalProps }: { guildId: string; modalProps: ModalProps; }) {
     const [threshold, setThreshold] = useState(7);
+    const [customDays, setCustomDays] = useState(45);
+    const [roleFilter, setRoleFilter] = useState("");
+    const [sortBy, setSortBy] = useState<"inactive" | "name" | "role">("inactive");
+    const [hideNeverSeen, setHideNeverSeen] = useState(false);
     const [search, setSearch] = useState("");
+    const effectiveThreshold = threshold === -1 ? Math.max(0, Math.floor(customDays) || 0) : threshold;
     const [loading, setLoading] = useState(true);
     const [storedData, setStoredData] = useState<TrackerData>({});
     const [memberVersion, setMemberVersion] = useState(0);
@@ -165,11 +176,16 @@ function InactivityModalComponent({ guildId, modalProps }: { guildId: string; mo
 
     const allMembers = useMemo(() => buildMemberList(guildId, storedData), [guildId, storedData, loading, memberVersion]);
 
+    const roleNames = useMemo(
+        () => [...new Set(allMembers.map(m => m.topRoleName).filter((r): r is string => !!r))].sort((a, b) => a.localeCompare(b)),
+        [allMembers],
+    );
+
     const filteredMembers = useMemo(() => {
         let members = allMembers.filter(m =>
-            m.daysInactive === null || m.daysInactive >= threshold
+            m.daysInactive === null ? !hideNeverSeen : m.daysInactive >= effectiveThreshold
         );
-
+        if (roleFilter) members = members.filter(m => m.topRoleName === roleFilter);
         if (search.trim()) {
             const q = search.toLowerCase();
             members = members.filter(m =>
@@ -177,9 +193,10 @@ function InactivityModalComponent({ guildId, modalProps }: { guildId: string; mo
                 m.username.toLowerCase().includes(q)
             );
         }
-
+        if (sortBy === "name") members = [...members].sort((a, b) => a.displayName.localeCompare(b.displayName));
+        else if (sortBy === "role") members = [...members].sort((a, b) => (a.topRoleName ?? "").localeCompare(b.topRoleName ?? "") || a.displayName.localeCompare(b.displayName));
         return members;
-    }, [allMembers, threshold, search]);
+    }, [allMembers, effectiveThreshold, roleFilter, hideNeverSeen, sortBy, search]);
 
     return (
         <ModalRoot {...modalProps} size={ModalSize.MEDIUM}>
@@ -200,10 +217,39 @@ function InactivityModalComponent({ guildId, modalProps }: { guildId: string; mo
                         serialize={v => String(v)}
                         closeOnSelect={true}
                     />
+                    {threshold === -1 && (
+                        <input
+                            type="number" min={0} value={customDays}
+                            onChange={e => setCustomDays(Number(e.target.value))}
+                            className={cl("search")} style={{ width: "90px" }} aria-label="Custom days"
+                        />
+                    )}
+                </div>
+                <div className={cl("filter-bar")}>
+                    <Text variant="text-sm/medium">Role:</Text>
+                    <Select
+                        options={[{ label: "Any role", value: "" }, ...roleNames.map(r => ({ label: r, value: r }))]}
+                        select={setRoleFilter}
+                        isSelected={v => v === roleFilter}
+                        serialize={v => String(v)}
+                        closeOnSelect={true}
+                    />
+                    <Text variant="text-sm/medium">Sort:</Text>
+                    <Select
+                        options={[{ label: "Longest inactive", value: "inactive" }, { label: "Name", value: "name" }, { label: "Role", value: "role" }]}
+                        select={setSortBy}
+                        isSelected={v => v === sortBy}
+                        serialize={v => String(v)}
+                        closeOnSelect={true}
+                    />
+                    <label style={{ display: "flex", alignItems: "center", gap: "6px", color: "var(--text-normal)", fontSize: "13px", cursor: "pointer" }}>
+                        <input type="checkbox" checked={hideNeverSeen} onChange={e => setHideNeverSeen(e.target.checked)} />
+                        Hide never-seen
+                    </label>
                 </div>
 
                 <Text variant="text-sm/normal" className={cl("stats")}>
-                    {filteredMembers.length} members inactive for more than {threshold} days
+                    {filteredMembers.length} members inactive for more than {effectiveThreshold} days
                 </Text>
 
                 <input
@@ -214,14 +260,14 @@ function InactivityModalComponent({ guildId, modalProps }: { guildId: string; mo
                     className={cl("search")}
                 />
 
-                <Tooltip text="Copy CSV to clipboard">
+                <Tooltip text="Download CSV file">
                     {tooltipProps => (
                         <Button
                             {...tooltipProps}
                             look={Button.Looks.OUTLINED}
                             color={Button.Colors.PRIMARY}
                             size={Button.Sizes.SMALL}
-                            onClick={() => exportCsv(filteredMembers)}
+                            onClick={() => exportCsv(filteredMembers, guildName)}
                             className={cl("export-btn")}
                         >
                             Export CSV
@@ -244,11 +290,12 @@ function InactivityModalComponent({ guildId, modalProps }: { guildId: string; mo
                         </Text>
                     </div>
                 ) : (
-                    filteredMembers.map(member => (
-                        <div key={member.userId} className={cl("member-row")}>
+                    <VirtualList items={filteredMembers} rowHeight={52} height={420} keyOf={m => m.userId} renderRow={member => (
+                        <div className={cl("member-row")}>
                             <img
                                 src={member.avatarUrl ?? undefined}
                                 alt=""
+                                loading="lazy"
                                 className={cl("avatar")}
                             />
 
@@ -279,7 +326,7 @@ function InactivityModalComponent({ guildId, modalProps }: { guildId: string; mo
                                 {formatLastSeen(member.lastSeen)}
                             </Text>
                         </div>
-                    ))
+                    )} />
                 )}
             </ModalContent>
         </ModalRoot>
