@@ -22,6 +22,8 @@ export interface BulkExportParams {
     /** "server" = one combined file per server; "all" = one file for every server;
      * "channel" = a separate file per channel. */
     combineMode: "server" | "all" | "channel";
+    startDate?: string | null;
+    endDate?: string | null;
 }
 
 export interface BulkExportJob {
@@ -140,6 +142,8 @@ export function startBulkExport(params: BulkExportParams) {
                 format: params.format,
                 messageLimit: params.messageLimit,
                 combineFiles,
+                startDate: params.startDate ?? null,
+                endDate: params.endDate ?? null,
                 onCombinedContent: params.combineMode === "all"
                     ? (guildName, content) => { merged.push({ name: guildName, content }); }
                     : undefined,

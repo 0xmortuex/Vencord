@@ -19,6 +19,7 @@ import { ModalContent, ModalFooter, ModalHeader, ModalProps, ModalRoot, ModalSiz
 import { useForceUpdater } from "@utils/react";
 import {
     Button,
+    FluxDispatcher,
     Forms,
     GuildMemberStore,
     GuildRoleStore,
@@ -31,6 +32,7 @@ import {
     useMemo,
     UserStore,
     useState,
+    useStateFromStores,
 } from "@webpack/common";
 
 interface ServerMemberExportModalProps {
@@ -152,7 +154,24 @@ function getFilterableRoles(guildId: string, members: MemberInfo[]): RoleOption[
 }
 
 export function ServerMemberExportModal({ modalProps, guildId, guildName }: ServerMemberExportModalProps) {
-    const members = useMemo(() => getGuildMembers(guildId), [guildId]);
+    // Discord only keeps members it has already needed in GuildMemberStore, so
+    // the picker used to list whoever happened to be cached and told the user
+    // to go scroll the member list. Ask the gateway for the full list (the same
+    // GUILD_MEMBERS_REQUEST RoleMembers/InactivityTracker use) and rebuild the
+    // picker as chunks stream in.
+    const memberCount = useStateFromStores(
+        [GuildMemberStore],
+        () => GuildMemberStore.getMemberIds(guildId).length,
+    );
+    useEffect(() => {
+        FluxDispatcher.dispatch({
+            type: "GUILD_MEMBERS_REQUEST",
+            guildIds: [guildId],
+            query: "",
+            presences: false,
+        });
+    }, [guildId]);
+    const members = useMemo(() => getGuildMembers(guildId), [guildId, memberCount]);
 
     const roles = useMemo(() => getFilterableRoles(guildId, members), [guildId, members]);
     const allGuilds = useMemo(() => getAllGuilds(guildId), [guildId]);

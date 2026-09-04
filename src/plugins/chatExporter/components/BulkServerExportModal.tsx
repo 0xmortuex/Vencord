@@ -7,6 +7,7 @@
 import { classNameFactory } from "@api/Styles";
 import { cancelBulkExport, getBulkJob, startBulkExport, subscribeBulk } from "@plugins/chatExporter/bulkManager";
 import { getServerJob, subscribe } from "@plugins/chatExporter/exportManager";
+import { defaultLimit, settings } from "@plugins/chatExporter/settings";
 import { ModalContent, ModalFooter, ModalHeader, ModalProps, ModalRoot, ModalSize } from "@utils/modal";
 import { useForceUpdater } from "@utils/react";
 import { Button, Forms, GuildStore, showToast, Text, TextInput, Toasts, useEffect, useMemo, useState } from "@webpack/common";
@@ -36,9 +37,11 @@ export function BulkServerExportModal({ modalProps, initialGuildId }: BulkServer
         () => new Set(initialGuildId ? [initialGuildId] : []),
     );
     const [query, setQuery] = useState("");
-    const [format, setFormat] = useState<"html" | "json">("html");
-    const [messageLimit, setMessageLimit] = useState<number | null>(1000);
-    const [combineMode, setCombineMode] = useState<"server" | "all" | "channel">("server");
+    const [format, setFormat] = useState<"html" | "json">(settings.store.defaultFormat as "html" | "json");
+    const [messageLimit, setMessageLimit] = useState<number | null>(defaultLimit);
+    const [combineMode, setCombineMode] = useState<"server" | "all" | "channel">(settings.store.bulkFileMode as "server" | "all" | "channel");
+    const [startDate, setStartDate] = useState("");
+    const [endDate, setEndDate] = useState("");
     const forceUpdate = useForceUpdater();
 
     // Re-render on both bulk-level and per-server progress changes.
@@ -78,7 +81,7 @@ export function BulkServerExportModal({ modalProps, initialGuildId }: BulkServer
     function start() {
         const targets = guilds.filter(g => selected.has(g.id)).map(g => ({ id: g.id, name: g.name }));
         if (!targets.length) return;
-        startBulkExport({ targets, format, messageLimit, combineMode });
+        startBulkExport({ targets, format, messageLimit, combineMode, startDate: startDate || null, endDate: endDate || null });
         showToast(`Bulk exporting ${targets.length} server${targets.length !== 1 ? "s" : ""}…`, Toasts.Type.MESSAGE);
     }
 
@@ -138,6 +141,22 @@ export function BulkServerExportModal({ modalProps, initialGuildId }: BulkServer
                         </div>
                     </Forms.FormSection>
 
+                    {/* Date Range */}
+                    <Forms.FormSection style={{ marginTop: "16px" }}>
+                        <Forms.FormTitle>Date Range (optional)</Forms.FormTitle>
+                        <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+                        <div>
+                            <label style={{ fontSize: "12px", color: "#949ba4", display: "block", marginBottom: "4px" }}>Start</label>
+                            <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} disabled={isExporting}
+                                style={{ background: "#1e1f22", border: "1px solid #3f4147", borderRadius: "4px", color: "#dbdee1", padding: "6px 8px", fontSize: "14px" }} />
+                        </div>
+                        <div>
+                            <label style={{ fontSize: "12px", color: "#949ba4", display: "block", marginBottom: "4px" }}>End</label>
+                            <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} disabled={isExporting}
+                                style={{ background: "#1e1f22", border: "1px solid #3f4147", borderRadius: "4px", color: "#dbdee1", padding: "6px 8px", fontSize: "14px" }} />
+                        </div>
+                        </div>
+                    </Forms.FormSection>
                     {/* Output layout */}
                     <Forms.FormSection style={{ marginTop: "16px" }}>
                         <Forms.FormTitle>Files</Forms.FormTitle>

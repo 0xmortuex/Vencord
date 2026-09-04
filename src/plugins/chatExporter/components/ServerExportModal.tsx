@@ -6,9 +6,10 @@
 
 import { deleteCheckpoint, generateJobId, loadCheckpoint } from "@plugins/chatExporter/checkpoint";
 import { cancelServerJob, getServerJob, isEarlyFinishRequested, requestEarlyFinish, saveServerProgress, startServerExport, subscribe } from "@plugins/chatExporter/exportManager";
+import { defaultLimit, settings } from "@plugins/chatExporter/settings";
 import { ModalContent, ModalFooter, ModalHeader, ModalProps, ModalRoot, ModalSize } from "@utils/modal";
 import { useForceUpdater } from "@utils/react";
-import { Button, ChannelStore, Forms, GuildChannelStore, showToast, Text, Toasts, useEffect, useState } from "@webpack/common";
+import { Button, ChannelStore, Forms, GuildChannelStore, showToast, Text, TextInput, Toasts, useEffect, useMemo, useState } from "@webpack/common";
 
 interface ServerExportModalProps {
     modalProps: ModalProps;
@@ -34,9 +35,16 @@ export function ServerExportModal({ modalProps, guildId, guildName }: ServerExpo
         .filter(Boolean) as ChannelInfo[];
 
     const [channels, setChannels] = useState<ChannelInfo[]>(textChannels);
-    const [format, setFormat] = useState<"html" | "json">("html");
-    const [messageLimit, setMessageLimit] = useState<number | null>(1000);
-    const [combineFiles, setCombineFiles] = useState(false);
+    const [format, setFormat] = useState<"html" | "json">(settings.store.defaultFormat as "html" | "json");
+    const [messageLimit, setMessageLimit] = useState<number | null>(defaultLimit);
+    const [combineFiles, setCombineFiles] = useState(!!settings.store.combineServerFiles);
+    const [search, setSearch] = useState("");
+    const [startDate, setStartDate] = useState("");
+    const [endDate, setEndDate] = useState("");
+    const visibleChannels = useMemo(() => {
+        const q = search.trim().toLowerCase();
+        return q ? channels.filter(c => c.name.toLowerCase().includes(q)) : channels;
+    }, [channels, search]);
     const forceUpdate = useForceUpdater();
 
     const jobId = generateJobId("server", guildId);
@@ -60,7 +68,9 @@ export function ServerExportModal({ modalProps, guildId, guildName }: ServerExpo
     }
 
     function selectAll() {
-        setChannels(prev => prev.map(c => ({ ...c, selected: true })));
+        // Scoped to the current search so "Select All" on a filtered list is safe.
+        const ids = new Set(visibleChannels.map(c => c.id));
+        setChannels(prev => prev.map(c => ids.has(c.id) ? { ...c, selected: true } : c));
     }
 
     function selectNone() {
@@ -77,6 +87,8 @@ export function ServerExportModal({ modalProps, guildId, guildName }: ServerExpo
             format,
             messageLimit,
             combineFiles,
+            startDate: startDate || null,
+            endDate: endDate || null,
         });
     }
 
@@ -96,6 +108,8 @@ export function ServerExportModal({ modalProps, guildId, guildName }: ServerExpo
             format,
             messageLimit,
             combineFiles,
+            startDate: startDate || null,
+            endDate: endDate || null,
             resumeFromCheckpoint: true,
         });
     }
@@ -203,21 +217,38 @@ export function ServerExportModal({ modalProps, guildId, guildName }: ServerExpo
                         </label>
                     </Forms.FormSection>
 
+                    {/* Date Range */}
+                    <Forms.FormSection style={{ marginTop: "16px" }}>
+                        <Forms.FormTitle>Date Range (optional)</Forms.FormTitle>
+                        <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+                        <div>
+                            <label style={{ fontSize: "12px", color: "#949ba4", display: "block", marginBottom: "4px" }}>Start</label>
+                            <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} disabled={isExporting}
+                                style={{ background: "#1e1f22", border: "1px solid #3f4147", borderRadius: "4px", color: "#dbdee1", padding: "6px 8px", fontSize: "14px" }} />
+                        </div>
+                        <div>
+                            <label style={{ fontSize: "12px", color: "#949ba4", display: "block", marginBottom: "4px" }}>End</label>
+                            <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} disabled={isExporting}
+                                style={{ background: "#1e1f22", border: "1px solid #3f4147", borderRadius: "4px", color: "#dbdee1", padding: "6px 8px", fontSize: "14px" }} />
+                        </div>
+                        </div>
+                    </Forms.FormSection>
                     {/* Channel list */}
                     <Forms.FormSection style={{ marginTop: "16px" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                             <Forms.FormTitle>Channels ({selectedCount}/{channels.length} selected)</Forms.FormTitle>
                             <div style={{ display: "flex", gap: "8px" }}>
                                 <Button size={Button.Sizes.TINY} look={Button.Looks.LINK} onClick={selectAll} disabled={isExporting}>
-                                    Select All
+                                    Select All{search.trim() ? " (shown)" : ""}
                                 </Button>
                                 <Button size={Button.Sizes.TINY} look={Button.Looks.LINK} onClick={selectNone} disabled={isExporting}>
                                     Select None
                                 </Button>
                             </div>
                         </div>
+                        <TextInput placeholder="Search channels…" value={search} onChange={setSearch} disabled={isExporting} style={{ marginBottom: "8px" }} />
                         <div className="vc-chatexporter-channel-list">
-                            {channels.map(ch => (
+                            {visibleChannels.map(ch => (
                                 <div
                                     key={ch.id}
                                     className="vc-chatexporter-channel-item"

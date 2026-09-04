@@ -15,6 +15,7 @@ import { ChannelStore, GuildStore, Menu } from "@webpack/common";
 import { BulkServerExportModal } from "./components/BulkServerExportModal";
 import { ExportModal } from "./components/ExportModal";
 import { ServerExportModal } from "./components/ServerExportModal";
+import { settings } from "./settings";
 
 function openExportModal(channelId: string) {
     const channel = ChannelStore.getChannel(channelId);
@@ -118,6 +119,7 @@ export default definePlugin({
     name: "ChatExporter",
     description: "Export messages from any channel, DM, group chat, or entire server (one or many servers at once) as HTML or JSON files",
     authors: [Devs.UnknownHacker9991],
+    settings,
 
     contextMenus: {
         "channel-context": channelContextPatch,

@@ -7,6 +7,7 @@
 import { deleteCheckpoint, generateJobId, loadCheckpoint } from "@plugins/chatExporter/checkpoint";
 import { ExportOptions } from "@plugins/chatExporter/exporter";
 import { cancelChannelJob, getChannelJob, saveChannelProgress, startChannelExport, subscribe } from "@plugins/chatExporter/exportManager";
+import { defaultLimit, settings } from "@plugins/chatExporter/settings";
 import { ModalContent, ModalFooter, ModalHeader, ModalProps, ModalRoot, ModalSize } from "@utils/modal";
 import { useForceUpdater } from "@utils/react";
 import { Button, Forms, showToast, Text, Toasts, useEffect, useState } from "@webpack/common";
@@ -19,12 +20,12 @@ interface ExportModalProps {
 }
 
 export function ExportModal({ modalProps, channelId, channelName, serverName }: ExportModalProps) {
-    const [format, setFormat] = useState<"html" | "json">("html");
-    const [messageLimit, setMessageLimit] = useState<number | null>(100);
-    const [includeImages, setIncludeImages] = useState(true);
-    const [includeEmbeds, setIncludeEmbeds] = useState(true);
-    const [includeReactions, setIncludeReactions] = useState(true);
-    const [includePins, setIncludePins] = useState(true);
+    const [format, setFormat] = useState<"html" | "json">(settings.store.defaultFormat as "html" | "json");
+    const [messageLimit, setMessageLimit] = useState<number | null>(defaultLimit);
+    const [includeImages, setIncludeImages] = useState(!!settings.store.includeImages);
+    const [includeEmbeds, setIncludeEmbeds] = useState(!!settings.store.includeEmbeds);
+    const [includeReactions, setIncludeReactions] = useState(!!settings.store.includeReactions);
+    const [includePins, setIncludePins] = useState(!!settings.store.includePins);
     const [startDate, setStartDate] = useState("");
     const [endDate, setEndDate] = useState("");
     const forceUpdate = useForceUpdater();

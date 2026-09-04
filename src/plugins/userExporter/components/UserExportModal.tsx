@@ -27,6 +27,7 @@ import {
     GuildStore,
     showToast,
     Text,
+    TextInput,
     Toasts,
     useEffect,
     useMemo,
@@ -86,6 +87,20 @@ export function UserExportModal({ modalProps, user }: UserExportModalProps) {
 
     const [selectedChannels, setSelectedChannels] = useState<Set<string>>(new Set());
     const [expandedGuilds, setExpandedGuilds] = useState<Set<string>>(new Set());
+    const [treeSearch, setTreeSearch] = useState("");
+    // Filter the tree by server OR channel name; while searching, only matching
+    // channels are shown and their servers are auto-expanded.
+    const treeQuery = treeSearch.trim().toLowerCase();
+    const visibleGuilds = useMemo(() => {
+        if (!treeQuery) return mutualGuilds;
+        const out: GuildEntry[] = [];
+        for (const g of mutualGuilds) {
+            if (g.name.toLowerCase().includes(treeQuery)) { out.push(g); continue; }
+            const channels = g.channels.filter(c => c.name.toLowerCase().includes(treeQuery));
+            if (channels.length) out.push({ ...g, channels });
+        }
+        return out;
+    }, [mutualGuilds, treeQuery]);
 
     const [format, setFormat] = useState<"html" | "json">("html");
     const [messageLimit, setMessageLimit] = useState<number | null>(500);
@@ -421,6 +436,7 @@ export function UserExportModal({ modalProps, user }: UserExportModalProps) {
                             </div>
                         </div>
 
+                        <TextInput placeholder="Search servers or channels…" value={treeSearch} onChange={setTreeSearch} disabled={isExporting} style={{ marginTop: "8px" }} />
                         {mutualGuilds.length === 0 ? (
                             <div style={{ padding: "16px", color: "#949ba4", textAlign: "center" }}>
                                 No mutual servers with this user.
@@ -434,8 +450,8 @@ export function UserExportModal({ modalProps, user }: UserExportModalProps) {
                                 padding: "8px",
                                 marginTop: "8px",
                             }}>
-                                {mutualGuilds.map(g => {
-                                    const expanded = expandedGuilds.has(g.id);
+                                {visibleGuilds.map(g => {
+                                    const expanded = expandedGuilds.has(g.id) || !!treeQuery;
                                     const fully = isGuildFullySelected(g.id);
                                     const partial = isGuildPartiallySelected(g.id);
                                     return (

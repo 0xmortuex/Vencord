@@ -18,6 +18,7 @@ import {
 } from "./checkpoint";
 import { ExportOptions, ExportProgress, fetchMessages } from "./exporter";
 import { renderHtml } from "./htmlRenderer";
+import { formatFilename } from "./settings";
 
 export interface ExportJob {
     id: string;
@@ -180,9 +181,7 @@ export function startChannelExport(
             job.progress = { fetched: messages.length, total: options.messageLimit, status: "rendering" };
             notify();
 
-            const safeName = (serverName + "-" + channelName).replace(/[^a-zA-Z0-9-_]/g, "_");
-            const date = new Date().toISOString().split("T")[0];
-            const filename = `${safeName}-${date}`;
+            const filename = formatFilename({ server: serverName, channel: channelName });
 
             if (options.format === "json") {
                 saveFile(new File([JSON.stringify(messages, null, 2)], filename + ".json", { type: "application/json" }));
@@ -233,6 +232,8 @@ interface ServerExportParams {
     onCombinedContent?: (guildName: string, content: string, format: "html" | "json") => void;
     /** Only export messages newer than this (ISO date/time). Used by AutoExport's incremental runs. */
     startDate?: string | null;
+    /** Only export messages older than this (ISO date). */
+    endDate?: string | null;
     resumeFromCheckpoint?: boolean;
 }
 
@@ -255,6 +256,7 @@ export function startServerExport(params: ServerExportParams) {
     const messageLimit = checkpoint ? checkpoint.messageLimit : params.messageLimit;
     const combineFiles = checkpoint ? checkpoint.combineFiles : params.combineFiles;
     const startDate = checkpoint ? checkpoint.startDate : (params.startDate ?? null);
+    const endDate = checkpoint ? (checkpoint.endDate ?? null) : (params.endDate ?? null);
     const { onCombinedContent } = params;
 
     // Checkpoints only make sense when each channel is saved to disk as it
@@ -308,7 +310,7 @@ export function startServerExport(params: ServerExportParams) {
                 messageLimit,
                 combineFiles,
                 startDate,
-                endDate: null,
+                endDate,
                 channelsRequested,
                 channelsCompleted,
                 inProgressChannel: inProgress,
@@ -330,7 +332,7 @@ export function startServerExport(params: ServerExportParams) {
             const chSafe = channelName.replace(/[^a-zA-Z0-9-_]/g, "_");
             const ext = format === "json" ? "json" : "html";
             const mime = format === "json" ? "application/json" : "text/html";
-            const filename = `${safeName}-${chSafe}-${date}.${ext}`;
+            const filename = formatFilename({ server: guildName, channel: channelName }) + "." + ext;
             const content = format === "json"
                 ? JSON.stringify(messages, null, 2)
                 : renderHtml(messages, channelName, guildName);
@@ -362,7 +364,7 @@ export function startServerExport(params: ServerExportParams) {
                         includeReactions: true,
                         includePins: true,
                         startDate,
-                        endDate: null,
+                        endDate,
                     };
                     return fetchMessages(
                         options,
@@ -469,7 +471,7 @@ export function startServerExport(params: ServerExportParams) {
                     } else {
                         const ext = format === "json" ? "json" : "html";
                         const mime = format === "json" ? "application/json" : "text/html";
-                        saveFile(new File([content], `${safeName}-${date}.${ext}`, { type: mime }));
+                        saveFile(new File([content], formatFilename({ server: guildName }) + "." + ext, { type: mime }));
                     }
                     // Free memory only after the combined file has been handed off
                     for (const exp of allExports) exp.messages = null;
