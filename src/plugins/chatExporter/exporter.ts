@@ -84,10 +84,11 @@ const MAX_CONSECUTIVE_429S = 10;
 type CheckpointCallback = (lastMessageId: string | null, fetchedSoFar: number) => void;
 
 // How long to wait before the next page. Uses Discord's rate-limit headers so a
-// fetch with plenty of budget left doesn't sit idle for a fixed 300 ms between
-// every 100-message page (the old behaviour, which dominated export time), while
-// a fetch that's about to hit the limit waits exactly until the bucket resets.
-// Falls back to the old fixed delay if the headers aren't available.
+// fetch with budget left in its bucket goes straight to the next 100-message
+// page (pages are sequential - each needs the previous one's last id - so the
+// round trip itself is the only pacing needed), while a fetch that has used up
+// the bucket waits exactly until it resets. Falls back to a fixed delay if the
+// headers aren't available.
 function rateLimitDelay(res: any): number {
     try {
         const h = res?.headers;
@@ -95,7 +96,7 @@ function rateLimitDelay(res: any): number {
         const remaining = Number(get("x-ratelimit-remaining"));
         const resetAfter = Number(get("x-ratelimit-reset-after"));
         if (Number.isFinite(remaining)) {
-            if (remaining > 1) return 50;
+            if (remaining > 0) return 0;
             if (Number.isFinite(resetAfter) && resetAfter > 0) return Math.min(10_000, Math.ceil(resetAfter * 1000) + 50);
             return 1000;
         }
@@ -247,7 +248,8 @@ export async function fetchMessages(
         // Only delay if we got a full batch (more messages likely exist), and
         // only as long as the rate-limit headers say we must.
         if (!done && batch.length === 100) {
-            await pause(rateLimitDelay(res), signal);
+            const delay = rateLimitDelay(res);
+            if (delay > 0) await pause(delay, signal);
         }
     }
 

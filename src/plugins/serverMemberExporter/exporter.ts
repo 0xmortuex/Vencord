@@ -4,9 +4,10 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import { searchAuthorMessages } from "@plugins/chatExporter/guildSearch";
 import { saveFile } from "@utils/web";
 import type { Embed, MessageAttachment, MessageReaction } from "@vencord/discord-types";
-import { ChannelStore, RestAPI, showToast, Toasts } from "@webpack/common";
+import { ChannelStore, showToast, Toasts } from "@webpack/common";
 
 import { renderHtml } from "./htmlRenderer";
 
@@ -115,44 +116,14 @@ export function isEarlyFinishRequested(guildId: string): boolean {
     return earlyFinishFlags.get(guildId) === true;
 }
 
-// Rate-limit tuning for the guild search API. The endpoint only returns 25 hits
-// per page, so paging dominates the runtime. We start at an optimistic delay and
-// only fall back to the conservative one if the route actually rate-limits us -
-// this is ~3x faster than a fixed 3500ms while still self-correcting on 429s.
-const SEARCH_PAGE_SIZE = 25;
-const FAST_DELAY = 350; // floor between pages while the rate-limit bucket still has room
-const BASE_DELAY = 1200; // used only when the response exposes no rate-limit headers
-const ELEVATED_DELAY = 3500; // safe fallback once 429s appear
-const COOLDOWN_INTERVAL = 40; // pages between safety cooldowns (header pacing usually handles it)
-const COOLDOWN_DURATION = 3000;
-const MAX_RETRIES = 5;
-const MAX_SEARCH_OFFSET = 2000;
-const RATE_LIMIT_THRESHOLD = 2; // switch to ELEVATED_DELAY after this many cumulative 429s
-
-// Discord's REST responses may surface headers as a Headers object (.get) or a
-// plain lowercased map, depending on the path. Read both shapes defensively.
-function readHeader(headers: any, name: string): string | undefined {
-    if (!headers) return undefined;
-    if (typeof headers.get === "function") return headers.get(name) ?? undefined;
-    return headers[name] ?? headers[name.toLowerCase()] ?? undefined;
-}
-
-// Pace from Discord's own bucket headers: burst while requests remain, then wait
-// exactly until the bucket resets. Falls back to a fixed delay if headers are
-// absent, and to the safe elevated delay once we've been 429'd a few times.
-function nextDelay(res: any, total429s: number): number {
-    if (total429s >= RATE_LIMIT_THRESHOLD) return ELEVATED_DELAY;
-
-    const remainingRaw = readHeader(res?.headers, "x-ratelimit-remaining");
-    if (remainingRaw == null) return BASE_DELAY;
-
-    const remaining = Number(remainingRaw);
-    if (remaining > 0) return FAST_DELAY;
-
-    const resetRaw = readHeader(res?.headers, "x-ratelimit-reset-after");
-    const resetMs = resetRaw != null ? Number(resetRaw) * 1000 : BASE_DELAY;
-    return Math.max(FAST_DELAY, resetMs + 100);
-}
+// Concurrency. The search endpoint only returns 25 hits per page, so paging
+// dominates the runtime: pages of one search are requested side by side, every
+// selected server is searched at once (each has its own rate-limit bucket), and
+// a couple of members overlap so a member with no messages costs one round trip
+// instead of a full stop. The shared bucket limiter in guildSearch decides how
+// many of these requests may actually be in flight per server.
+const MEMBER_CONCURRENCY = 2;
+const PAGE_CONCURRENCY = 3;
 
 // Discord snowflakes encode a timestamp, so a date range can be pushed to the
 // server as min_id/max_id instead of scanning and discarding out-of-range pages.
@@ -170,175 +141,67 @@ function endDateBound(dateStr: string): Date {
     return d;
 }
 
-// Abort-aware sleep: resolves immediately when the export is cancelled so a
-// pending cooldown/backoff never keeps a dead job running for seconds.
-function pause(ms: number, signal: AbortSignal): Promise<void> {
-    return new Promise(resolve => {
-        if (signal.aborted) return resolve();
-        const timer = setTimeout(finish, ms);
-        function finish() {
-            signal.removeEventListener("abort", finish);
-            clearTimeout(timer);
-            resolve();
-        }
-        signal.addEventListener("abort", finish);
-    });
-}
-
-function isRateLimitError(e: any): boolean {
-    if (e?.status === 429) return true;
-    const msg = String(e?.message ?? e ?? "").toLowerCase();
-    return msg.includes("429") || msg.includes("rate limit");
-}
-
-function getRetryDelay(attempt: number): number {
-    // attempt 0 = 10s, 1 = 20s, 2 = 40s, 3+ = 60s
-    const delays = [10000, 20000, 40000, 60000];
-    return delays[attempt] ?? 60000;
-}
-
-// Search a single guild for one author's messages (no channel_id => all channels)
-// and append them to `collected`. `primaryGuildId` keys the abort/early-finish
-// flags; `searchGuild` is the guild actually being searched.
+// Search a single guild for one author's messages (no channel_id => all channels).
+// `primaryGuildId` keys the abort/early-finish flags; `searchGuild` is the guild
+// actually being searched.
 async function searchGuildForAuthor(
     searchGuild: { id: string; name: string; },
     primaryGuildId: string,
     userId: string,
     options: ExportOptions,
-    collected: ExportedMessage[],
     onPageProgress: (found: number) => void,
     signal: AbortSignal,
-    rateLimitState: { total429s: number; },
-): Promise<void> {
+): Promise<ExportedMessage[]> {
     const limit = options.messageLimit;
-    let offset = 0;
-    let total = Infinity;
-    let successfulPages = 0;
-
     const startBound = options.startDate ? new Date(options.startDate) : null;
     const endBound = options.endDate ? endDateBound(options.endDate) : null;
 
-    while (offset < total) {
-        if (signal.aborted || earlyFinishFlags.get(primaryGuildId)) return;
-        if (limit && collected.length >= limit) return;
-        if (offset > MAX_SEARCH_OFFSET) return;
-
-        const query: Record<string, any> = {
-            author_id: userId,
-            offset,
-            include_nsfw: true,
-        };
+    const { hits } = await searchAuthorMessages({
+        guildId: searchGuild.id,
+        authorId: userId,
         // Bound the search by date server-side so we don't page through (and then
         // discard) messages outside the requested range.
-        if (startBound) query.min_id = dateToSnowflake(startBound);
-        if (endBound) query.max_id = dateToSnowflake(endBound);
+        minId: startBound ? dateToSnowflake(startBound) : undefined,
+        maxId: endBound ? dateToSnowflake(endBound) : undefined,
+        limit,
+        concurrency: PAGE_CONCURRENCY,
+        signal,
+        shouldStop: () => earlyFinishFlags.get(primaryGuildId) === true,
+        onProgress: onPageProgress,
+    });
 
-        let res: any = null;
-        let succeeded = false;
-
-        for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-            if (signal.aborted || earlyFinishFlags.get(primaryGuildId)) return;
-
-            try {
-                res = await RestAPI.get({
-                    url: `/guilds/${searchGuild.id}/messages/search`,
-                    query,
-                    retries: 0,
-                });
-                succeeded = true;
-                break;
-            } catch (e: any) {
-                // 403/404 => not in this guild or no access; just skip this guild.
-                if (e?.status === 403 || e?.status === 404) return;
-
-                if (isRateLimitError(e)) {
-                    rateLimitState.total429s++;
-                    if (attempt >= MAX_RETRIES - 1) {
-                        console.log(`[ServerMemberExporter] Too many 429s for user ${userId} in ${searchGuild.name}, skipping rest`);
-                        return;
-                    }
-                    const retryAfterHeader = readHeader(e?.headers, "retry-after");
-                    const serverDelay = e?.body?.retry_after
-                        ? Number(e.body.retry_after) * 1000
-                        : retryAfterHeader
-                            ? Number(retryAfterHeader) * 1000
-                            : 0;
-                    const backoff = Math.max(serverDelay, getRetryDelay(attempt));
-                    console.log(`[ServerMemberExporter] Rate limited, waiting ${Math.round(backoff / 1000)}s (attempt ${attempt + 1}/${MAX_RETRIES})`);
-                    await pause(backoff, signal);
-                    continue;
-                }
-
-                if (attempt === MAX_RETRIES - 1) {
-                    console.log(`[ServerMemberExporter] Failed after ${MAX_RETRIES} retries for user ${userId} in ${searchGuild.name}, skipping`);
-                    return;
-                }
-                await pause(getRetryDelay(attempt), signal);
-            }
+    const collected: ExportedMessage[] = [];
+    for (const msg of hits) {
+        if (startBound || endBound) {
+            const msgDate = new Date(msg.timestamp);
+            if (startBound && msgDate < startBound) continue;
+            if (endBound && msgDate >= endBound) continue;
         }
 
-        if (!succeeded || !res) return;
-        successfulPages++;
+        const channel = ChannelStore.getChannel(msg.channel_id);
+        collected.push({
+            id: msg.id,
+            channelId: msg.channel_id,
+            channelName: channel?.name ?? msg.channel_id,
+            guildId: searchGuild.id,
+            guildName: searchGuild.name,
+            content: msg.content ?? "",
+            timestamp: msg.timestamp,
+            edited_timestamp: msg.edited_timestamp,
+            attachments: options.includeAttachments ? (msg.attachments ?? []) : [],
+            embeds: options.includeEmbeds ? (msg.embeds ?? []) : [],
+            reactions: options.includeReactions ? (msg.reactions ?? []) : [],
+            type: msg.type,
+        });
 
-        // One-time diagnostic per search so we can confirm header-based pacing is
-        // active (remaining/resetAfter present) vs falling back to the fixed delay.
-        if (successfulPages === 1) {
-            const rem = readHeader(res.headers, "x-ratelimit-remaining");
-            const reset = readHeader(res.headers, "x-ratelimit-reset-after");
-            console.log(`[ServerMemberExporter] ${searchGuild.name}: ratelimit remaining=${rem ?? "n/a"} resetAfter=${reset ?? "n/a"}`);
-        }
-
-        const body = res?.body ?? {};
-        total = typeof body.total_results === "number" ? body.total_results : 0;
-        const hits: any[][] = body.messages ?? [];
-        if (!hits.length) break;
-
-        for (const hit of hits) {
-            const msg = Array.isArray(hit) ? hit[0] : hit;
-            if (!msg) continue;
-
-            if (startBound || endBound) {
-                const msgDate = new Date(msg.timestamp);
-                if (startBound && msgDate < startBound) continue;
-                if (endBound && msgDate >= endBound) continue;
-            }
-
-            const channel = ChannelStore.getChannel(msg.channel_id);
-            collected.push({
-                id: msg.id,
-                channelId: msg.channel_id,
-                channelName: channel?.name ?? msg.channel_id,
-                guildId: searchGuild.id,
-                guildName: searchGuild.name,
-                content: msg.content ?? "",
-                timestamp: msg.timestamp,
-                edited_timestamp: msg.edited_timestamp,
-                attachments: options.includeAttachments ? (msg.attachments ?? []) : [],
-                embeds: options.includeEmbeds ? (msg.embeds ?? []) : [],
-                reactions: options.includeReactions ? (msg.reactions ?? []) : [],
-                type: msg.type,
-            });
-
-            if (limit && collected.length >= limit) break;
-        }
-
-        onPageProgress(collected.length);
-
-        offset += SEARCH_PAGE_SIZE;
-        // Stop without a trailing delay once we've hit the limit or run out.
-        if (offset >= total) break;
         if (limit && collected.length >= limit) break;
-
-        if (successfulPages % COOLDOWN_INTERVAL === 0) {
-            await pause(COOLDOWN_DURATION, signal);
-        }
-
-        await pause(nextDelay(res, rateLimitState.total429s), signal);
     }
+    return collected;
 }
 
-// Collect one member's messages across every selected server (merged, capped by
-// the per-member limit). Servers where the member isn't present just yield nothing.
+// Collect one member's messages across every selected server at once (merged in
+// the searchGuilds order, capped by the per-member limit). Servers where the
+// member isn't present just yield nothing.
 async function fetchMemberMessages(
     searchGuilds: Array<{ id: string; name: string; }>,
     primaryGuildId: string,
@@ -346,15 +209,17 @@ async function fetchMemberMessages(
     options: ExportOptions,
     onPageProgress: (found: number) => void,
     signal: AbortSignal,
-    rateLimitState: { total429s: number; },
 ): Promise<ExportedMessage[]> {
-    const collected: ExportedMessage[] = [];
-    for (const guild of searchGuilds) {
-        if (signal.aborted || earlyFinishFlags.get(primaryGuildId)) break;
-        if (options.messageLimit && collected.length >= options.messageLimit) break;
-        await searchGuildForAuthor(guild, primaryGuildId, userId, options, collected, onPageProgress, signal, rateLimitState);
-    }
-    return collected;
+    const perGuildFound = searchGuilds.map(() => 0);
+    const perGuild = await Promise.all(searchGuilds.map((guild, i) => {
+        if (signal.aborted || earlyFinishFlags.get(primaryGuildId)) return [] as ExportedMessage[];
+        return searchGuildForAuthor(guild, primaryGuildId, userId, options, found => {
+            perGuildFound[i] = found;
+            onPageProgress(perGuildFound.reduce((a, b) => a + b, 0));
+        }, signal);
+    }));
+    const collected = perGuild.flat();
+    return options.messageLimit ? collected.slice(0, options.messageLimit) : collected;
 }
 
 function displayNameOf(m: MemberInfo): string {
@@ -381,15 +246,15 @@ export function startMemberExport(options: ExportOptions) {
     notify();
 
     (async () => {
-        const rateLimitState = { total429s: 0 };
         const date = new Date().toISOString().split("T")[0];
         const guildSafe = options.guildName.replace(/[^a-zA-Z0-9-_]/g, "_");
 
         // When not combining, each member's file is written to disk as soon as
         // they finish, and the in-memory messages are dropped to free memory.
-        const collected: ExportedMemberData[] = [];
+        // Kept in member order regardless of which member finishes first.
+        const collected: Array<ExportedMemberData | null> = options.members.map(() => null);
         let totalMessages = 0;
-        let earlyFinished = false;
+        let usersDone = 0;
 
         const saveMemberToDisk = (data: ExportedMemberData) => {
             const nameSafe = displayNameOf(data.member).replace(/[^a-zA-Z0-9-_]/g, "_");
@@ -402,21 +267,32 @@ export function startMemberExport(options: ExportOptions) {
             saveFile(new File([content], filename, { type: mime }));
         };
 
+        // Members currently being searched, for the progress line and running count.
+        const inFlight = new Map<number, { name: string; found: number; }>();
+        const publishProgress = () => {
+            let found = 0;
+            const names: string[] = [];
+            for (const m of inFlight.values()) {
+                found += m.found;
+                names.push(m.name);
+            }
+            job.progress = {
+                ...job.progress,
+                status: "fetching",
+                currentUser: names.join(", "),
+                usersDone,
+                totalMessages: totalMessages + found,
+            };
+            notify();
+        };
+
         try {
-            for (let i = 0; i < options.members.length; i++) {
-                if (controller.signal.aborted) break;
-                if (earlyFinishFlags.get(options.guildId)) {
-                    earlyFinished = true;
-                    break;
-                }
+            const runMember = async (i: number) => {
+                if (controller.signal.aborted || earlyFinishFlags.get(options.guildId)) return;
 
                 const member = options.members[i];
-                job.progress = {
-                    ...job.progress,
-                    status: "fetching",
-                    currentUser: displayNameOf(member),
-                };
-                notify();
+                inFlight.set(i, { name: displayNameOf(member), found: 0 });
+                publishProgress();
 
                 let messages: ExportedMessage[] = [];
                 try {
@@ -426,23 +302,26 @@ export function startMemberExport(options: ExportOptions) {
                         member.id,
                         options,
                         found => {
-                            job.progress = { ...job.progress, totalMessages: totalMessages + found };
-                            notify();
+                            const entry = inFlight.get(i);
+                            if (entry) entry.found = found;
+                            publishProgress();
                         },
                         controller.signal,
-                        rateLimitState,
                     );
                 } catch {
                     // Skip the member on unrecoverable errors but keep going.
                     messages = [];
                 }
+                if (controller.signal.aborted) return;
 
+                inFlight.delete(i);
                 totalMessages += messages.length;
+                usersDone++;
 
                 if (messages.length) {
                     const data: ExportedMemberData = { member, messages };
                     if (options.combineFiles) {
-                        collected.push(data);
+                        collected[i] = data;
                     } else {
                         try {
                             saveMemberToDisk(data);
@@ -453,9 +332,16 @@ export function startMemberExport(options: ExportOptions) {
                     }
                 }
 
-                job.progress = { ...job.progress, usersDone: i + 1, totalMessages };
-                notify();
-            }
+                publishProgress();
+            };
+
+            let next = 0;
+            const worker = async () => {
+                while (next < options.members.length) await runMember(next++);
+            };
+            await Promise.all(Array.from({ length: Math.min(MEMBER_CONCURRENCY, options.members.length) }, worker));
+
+            const earlyFinished = earlyFinishFlags.get(options.guildId) === true && usersDone < options.members.length;
 
             if (controller.signal.aborted) {
                 jobs.delete(options.guildId);
@@ -464,15 +350,16 @@ export function startMemberExport(options: ExportOptions) {
                 return;
             }
 
-            job.progress = { ...job.progress, status: "rendering" };
+            job.progress = { ...job.progress, status: "rendering", currentUser: "", usersDone };
             notify();
 
+            const exported = collected.filter((d): d is ExportedMemberData => d !== null);
             if (options.combineFiles) {
                 const ext = options.format === "json" ? "json" : "html";
                 const mime = options.format === "json" ? "application/json" : "text/html";
                 const content = options.format === "json"
-                    ? JSON.stringify(buildJson(options, collected), null, 2)
-                    : renderHtml(options.guildName, collected);
+                    ? JSON.stringify(buildJson(options, exported), null, 2)
+                    : renderHtml(options.guildName, exported);
                 saveFile(new File([content], `${guildSafe}-members-${date}.${ext}`, { type: mime }));
             }
 
@@ -480,7 +367,7 @@ export function startMemberExport(options: ExportOptions) {
             notify();
 
             const usersWithMessages = options.combineFiles
-                ? collected.length
+                ? exported.length
                 : job.progress.usersDone;
             const completionLabel = earlyFinished
                 ? `(stopped early, ${job.progress.usersDone}/${options.members.length} members)`

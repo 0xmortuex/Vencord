@@ -286,17 +286,20 @@ export function startServerExport(params: ServerExportParams) {
         const date = new Date().toISOString().split("T")[0];
         const safeName = guildName.replace(/[^a-zA-Z0-9-_]/g, "_");
 
+        // Channels already saved to disk in a previous session are skipped entirely.
+        const channelsToProcess = channels.filter(c => !completedSet.has(c.id));
+
         // When combineFiles is false, entries are saved to disk as they finish and
-        // their `messages` is set to null so GC can reclaim the memory.
-        const allExports: Array<{ channelName: string; messages: any[] | null; }> = [];
+        // their `messages` is set to null so GC can reclaim the memory. Indexed by
+        // position in channelsToProcess so the combined file keeps channel order
+        // no matter which channel finishes first.
+        const allExports: Array<{ channelName: string; messages: any[] | null; } | undefined> = new Array(channelsToProcess.length);
         const channelsCompleted: string[] = [...completedSet];
         const failedChannels: string[] = [];
         let totalMessageCount = checkpoint ? checkpoint.totalMessagesProcessed : 0;
-        const CONCURRENCY = 3;
+        // Each channel has its own rate-limit bucket, so several are fetched at once.
+        const CONCURRENCY = 5;
         let earlyFinished = false;
-
-        // Channels already saved to disk in a previous session are skipped entirely.
-        const channelsToProcess = channels.filter(c => !completedSet.has(c.id));
 
         const persistCheckpoint = (inProgress: InProgressChannel | null) => {
             if (!checkpointEnabled) return;
@@ -340,87 +343,95 @@ export function startServerExport(params: ServerExportParams) {
             console.log(`[ChatExporter] Saved channel ${channelName}: ${messages.length} messages`);
         };
 
-        // Process channels in parallel batches of CONCURRENCY
-        for (let i = 0; i < channelsToProcess.length; i += CONCURRENCY) {
-            if (controller.signal.aborted) break;
-            if (earlyFinishFlags.get(guildId)) {
-                earlyFinished = true;
-                break;
-            }
+        // A pool of CONCURRENCY workers pulls channels off the list as they free
+        // up, so one huge channel never leaves the other slots idle the way
+        // fixed batches did.
+        const inFlight = new Set<string>();
+        let nextIndex = 0;
+        let channelsDone = 0;
 
-            const batch = channelsToProcess.slice(i, i + CONCURRENCY);
-            const activeNames = batch.map(c => c.name).join(", ");
-            job.currentChannel = activeNames;
+        const publishCurrent = () => {
+            job.currentChannel = [...inFlight].join(", ");
             notify();
+        };
 
-            const results = await Promise.allSettled(
-                batch.map(ch => {
-                    const options: ExportOptions = {
-                        channelId: ch.id,
-                        format,
-                        messageLimit,
-                        includeImages: true,
-                        includeEmbeds: true,
-                        includeReactions: true,
-                        includePins: true,
-                        startDate,
-                        endDate,
-                    };
-                    return fetchMessages(
-                        options,
-                        p => { job.progress = p; notify(); },
-                        controller.signal,
-                        () => earlyFinishFlags.get(guildId) === true,
-                        (lastMessageId, fetchedSoFar) => {
-                            // Best-effort display of the most recently reporting channel.
-                            latestInProgress = { id: ch.id, name: ch.name, lastMessageId, fetchedSoFar };
-                            persistCheckpoint(latestInProgress);
-                        },
-                    ).then(messages => ({ channelId: ch.id, channelName: ch.name, messages }));
-                })
-            );
+        const runChannel = async (index: number) => {
+            const ch = channelsToProcess[index];
+            inFlight.add(ch.name);
+            publishCurrent();
 
-            for (let j = 0; j < results.length; j++) {
-                const result = results[j];
-                if (result.status !== "fulfilled") {
-                    // Surface failures (403s, persistent API errors) instead of
-                    // silently exporting an incomplete server.
-                    const ch = batch[j];
-                    console.error(`[ChatExporter] Failed to fetch #${ch.name}:`, result.reason);
-                    showToast(`Failed to export #${ch.name}: ${(result.reason as any)?.message ?? "unknown error"}`, Toasts.Type.FAILURE);
-                    failedChannels.push(ch.name);
-                    continue;
-                }
-                const exp = result.value;
-                totalMessageCount += exp.messages.length;
+            const options: ExportOptions = {
+                channelId: ch.id,
+                format,
+                messageLimit,
+                includeImages: true,
+                includeEmbeds: true,
+                includeReactions: true,
+                includePins: true,
+                startDate,
+                endDate,
+            };
+            try {
+                const messages = await fetchMessages(
+                    options,
+                    p => { job.progress = p; notify(); },
+                    controller.signal,
+                    () => earlyFinishFlags.get(guildId) === true,
+                    (lastMessageId, fetchedSoFar) => {
+                        // Best-effort display of the most recently reporting channel.
+                        latestInProgress = { id: ch.id, name: ch.name, lastMessageId, fetchedSoFar };
+                        persistCheckpoint(latestInProgress);
+                    },
+                );
+                // A cancelled fetch returns whatever it had; don't write that partial
+                // channel to disk or record it as completed.
+                if (controller.signal.aborted) return;
+
+                totalMessageCount += messages.length;
 
                 if (combineFiles) {
-                    allExports.push({ channelName: exp.channelName, messages: exp.messages });
+                    allExports[index] = { channelName: ch.name, messages };
                 } else {
                     try {
-                        saveChannelToDisk(exp.channelName, exp.messages);
+                        saveChannelToDisk(ch.name, messages);
                         // Only record completion once the file is safely on disk.
-                        channelsCompleted.push(exp.channelId);
+                        channelsCompleted.push(ch.id);
                     } catch (e: any) {
-                        console.error(`[ChatExporter] Failed to save channel ${exp.channelName}:`, e);
-                        showToast(`Failed to save #${exp.channelName}: ${e?.message ?? "unknown error"}`, Toasts.Type.FAILURE);
+                        console.error(`[ChatExporter] Failed to save channel ${ch.name}:`, e);
+                        showToast(`Failed to save #${ch.name}: ${e?.message ?? "unknown error"}`, Toasts.Type.FAILURE);
                     }
                     // Release memory: keep accounting entry but drop messages
-                    allExports.push({ channelName: exp.channelName, messages: null });
+                    allExports[index] = { channelName: ch.name, messages: null };
+                }
+            } catch (reason: any) {
+                if (controller.signal.aborted) return;
+                // Surface failures (403s, persistent API errors) instead of
+                // silently exporting an incomplete server.
+                console.error(`[ChatExporter] Failed to fetch #${ch.name}:`, reason);
+                showToast(`Failed to export #${ch.name}: ${reason?.message ?? "unknown error"}`, Toasts.Type.FAILURE);
+                failedChannels.push(ch.name);
+            } finally {
+                inFlight.delete(ch.name);
+                if (!controller.signal.aborted) {
+                    channelsDone++;
+                    job.channelsDone = completedSet.size + channelsDone;
+                    if (latestInProgress?.id === ch.id) latestInProgress = null;
+                    publishCurrent();
+                    // Checkpoint after each channel finishes and is on disk.
+                    persistCheckpoint(latestInProgress);
                 }
             }
+        };
 
-            job.channelsDone = completedSet.size + Math.min(i + CONCURRENCY, channelsToProcess.length);
-            notify();
-
-            // Checkpoint after each batch finishes and is on disk.
-            persistCheckpoint(null);
-
-            if (earlyFinishFlags.get(guildId)) {
-                earlyFinished = true;
-                break;
+        const worker = async () => {
+            while (nextIndex < channelsToProcess.length) {
+                if (controller.signal.aborted) return;
+                if (earlyFinishFlags.get(guildId)) return;
+                await runChannel(nextIndex++);
             }
-        }
+        };
+        await Promise.all(Array.from({ length: Math.min(CONCURRENCY, channelsToProcess.length) }, worker));
+        earlyFinished = earlyFinishFlags.get(guildId) === true;
 
         if (controller.signal.aborted) {
             serverJobs.delete(guildId);
@@ -453,13 +464,13 @@ export function startServerExport(params: ServerExportParams) {
                     if (format === "json") {
                         const combined: Record<string, any[]> = {};
                         for (const exp of allExports) {
-                            if (exp.messages) combined[exp.channelName] = exp.messages;
+                            if (exp?.messages) combined[exp.channelName] = exp.messages;
                         }
                         content = JSON.stringify(combined, null, 2);
                     } else {
                         const parts: string[] = [];
                         for (const exp of allExports) {
-                            if (!exp.messages) continue;
+                            if (!exp?.messages) continue;
                             parts.push(renderHtml(exp.messages, exp.channelName, guildName));
                         }
                         content = parts.join("\n\n");
@@ -474,7 +485,7 @@ export function startServerExport(params: ServerExportParams) {
                         saveFile(new File([content], formatFilename({ server: guildName }) + "." + ext, { type: mime }));
                     }
                     // Free memory only after the combined file has been handed off
-                    for (const exp of allExports) exp.messages = null;
+                    for (const exp of allExports) if (exp) exp.messages = null;
                 } catch (e: any) {
                     if (e instanceof RangeError) {
                         if (onCombinedContent) {
@@ -485,6 +496,7 @@ export function startServerExport(params: ServerExportParams) {
                                 Toasts.Type.MESSAGE,
                             );
                             for (const exp of allExports) {
+                                if (!exp) continue;
                                 if (exp.messages) { try { saveChannelToDisk(exp.channelName, exp.messages); } catch {} }
                                 exp.messages = null;
                             }
@@ -506,7 +518,7 @@ export function startServerExport(params: ServerExportParams) {
             if (!useCombined) {
                 // Fall back to per-channel save with whatever is still in memory
                 for (const exp of allExports) {
-                    if (!exp.messages) continue;
+                    if (!exp?.messages) continue;
                     try {
                         saveChannelToDisk(exp.channelName, exp.messages);
                     } catch (e: any) {
