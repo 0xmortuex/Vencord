@@ -62,6 +62,7 @@ export interface Settings {
     | "under-page"
     | "window"
     | undefined;
+    windowsMaterial: "none" | "mica" | "tabbed" | "acrylic";
     disableMinSize: boolean;
     winNativeTitleBar: boolean;
     plugins: {
@@ -96,13 +97,14 @@ const DefaultSettings: Settings = {
     autoUpdateNotification: true,
     useQuickCss: true,
     themeLinks: [],
-    eagerPatches: IS_REPORTER,
+    eagerPatches: false, // Eagerly patching no longer works due to module factories with the same id being able to have different sources now.
     enabledThemes: [],
     enableReactDevtools: false,
     frameless: false,
     transparent: false,
     winCtrlQ: false,
     macosVibrancyStyle: undefined,
+    windowsMaterial: "none",
     disableMinSize: false,
     winNativeTitleBar: false,
     plugins: {},
@@ -130,6 +132,35 @@ const DefaultSettings: Settings = {
 const settings = !IS_REPORTER ? VencordNative.settings.get() : {} as Settings;
 mergeDefaults(settings, DefaultSettings);
 
+// Built-ins this build ships turned on. `enabledByDefault` is only consulted by
+// getDefaultValue for keys that DON'T exist yet, so an existing profile - which
+// already has an entry for every plugin - never picks it up. Flip them once here
+// and record a marker, so this runs a single time and a later manual off-toggle
+// is respected. Done before SettingsStore is built so patches apply this launch.
+const ENABLE_BY_DEFAULT_ONCE = [
+    "AlwaysAnimate", "AlwaysExpandRoles", "BetterRoleContext", "BetterSessions",
+    "BiggerStreamPreview", "ClearURLs", "CustomRPC", "CustomIdle",
+    "DontRoundMyTimestamps", "FriendsSince", "FullSearchContext", "IrcColors",
+    "PinDMs", "PreviewMessage", "SilentTyping", "ValidUser", "WhoReacted",
+];
+if (!IS_REPORTER) {
+    try {
+        const marker = "enabledDefaultsRun_v1";
+        const meta = settings as any;
+        if (!meta[marker]) {
+            settings.plugins ??= {} as any;
+            for (const name of ENABLE_BY_DEFAULT_ONCE) {
+                const p = ((settings.plugins as any)[name] ??= {});
+                p.enabled = true;
+            }
+            meta[marker] = true;
+            VencordNative.settings.set(settings);
+        }
+    } catch (e) {
+        console.error("[Vencord] failed to apply default-on plugins", e);
+    }
+}
+
 export const SettingsStore = new SettingsStoreClass(settings, {
     readOnly: true,
     getDefaultValue({
@@ -150,7 +181,7 @@ export const SettingsStore = new SettingsStoreClass(settings, {
         if (path.startsWith("plugins.")) {
             const plugin = path.slice("plugins.".length);
             if (plugin in plugins) {
-                const setting = plugins[plugin].options?.[key];
+                const setting = plugins[plugin].settings?.def[key];
                 if (!setting) return v;
 
                 if ("default" in setting)
@@ -180,7 +211,7 @@ if (!IS_REPORTER) {
  * Same as {@link Settings} but unproxied. You should treat this as readonly,
  * as modifying properties on this will not save to disk or call settings
  * listeners.
- * WARNING: default values specified in plugin.options will not be ensured here. In other words,
+ * WARNING: default values specified in plugin.settings will not be ensured here. In other words,
  * settings for which you specified a default value may be uninitialised. If you need proper
  * handling for default values, use {@link Settings}
  */
@@ -260,7 +291,13 @@ export function definePluginSettings<
     Checks extends SettingsChecks<Def>,
     PrivateSettings extends object = {}
 >(def: Def, checks?: Checks) {
-    const definedSettings: DefinedSettings<Def, Checks, PrivateSettings> = {
+    if (checks) {
+        for (const [name, check] of Object.entries(checks)) {
+            Object.assign(def[name], check);
+        }
+    }
+
+    const definedSettings: DefinedSettings<Def, PrivateSettings> = {
         get store() {
             if (!definedSettings.pluginName) throw new Error("Cannot access settings before plugin is initialized");
             return Settings.plugins[definedSettings.pluginName] as any;
@@ -275,11 +312,10 @@ export function definePluginSettings<
                 : [`plugins.${definedSettings.pluginName}.*`]
         ) as UseSettings<Settings>[]).plugins[definedSettings.pluginName] as any,
         def,
-        checks: checks ?? {} as any,
         pluginName: "",
 
         withPrivateSettings<T extends object>() {
-            return this as DefinedSettings<Def, Checks, T>;
+            return this as DefinedSettings<Def, T>;
         }
     };
 

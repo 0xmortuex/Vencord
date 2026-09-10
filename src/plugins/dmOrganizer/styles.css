@@ -1,0 +1,243 @@
+/* Folder container */
+.vc-dmorg-folder {
+    margin: 0;
+    padding: 0;
+}
+
+/* Folder header */
+.vc-dmorg-folder-header {
+    display: flex;
+    align-items: center;
+    padding: 8px 8px 8px 0;
+    cursor: pointer;
+    user-select: none;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    color: #a3a6aa;
+    position: relative;
+    gap: 6px;
+}
+
+.vc-dmorg-folder-header:hover {
+    color: #dcddde;
+}
+
+/* Color bar on left */
+.vc-dmorg-folder-color-bar {
+    width: 3px;
+    height: 20px;
+    border-radius: 2px;
+    flex-shrink: 0;
+}
+
+/* Collapse icon */
+.vc-dmorg-collapse-icon {
+    flex-shrink: 0;
+    transition: transform 0.2s ease;
+    color: #a3a6aa;
+}
+
+.vc-dmorg-collapse-icon.vc-dmorg-expanded {
+    transform: rotate(90deg);
+}
+
+/* Folder name */
+.vc-dmorg-folder-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Actions area */
+.vc-dmorg-folder-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+/* Unread badge */
+.vc-dmorg-unread-badge {
+    background: #f23f43;
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    min-width: 16px;
+    height: 16px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 4px;
+}
+
+/* Unread dot */
+.vc-dmorg-unread-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #dcddde;
+}
+
+/* Search icon */
+.vc-dmorg-search-icon {
+    display: flex;
+    align-items: center;
+    padding: 2px;
+    border-radius: 3px;
+    color: #a3a6aa;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+}
+
+.vc-dmorg-folder-header:hover .vc-dmorg-search-icon {
+    opacity: 1;
+}
+
+.vc-dmorg-search-icon:hover {
+    color: #dcddde;
+}
+
+/* Search bar */
+.vc-dmorg-search-bar {
+    padding: 4px 8px 8px;
+}
+
+.vc-dmorg-search-input {
+    width: 100%;
+    padding: 4px 8px;
+    border: none;
+    border-radius: 4px;
+    background: #1e1f22;
+    color: #dcddde;
+    font-size: 12px;
+    outline: none;
+}
+
+.vc-dmorg-search-input::placeholder {
+    color: #72767d;
+}
+
+/* Folder contents with collapse animation */
+.vc-dmorg-folder-contents {
+    overflow: hidden;
+    transition: max-height 0.3s ease, opacity 0.2s ease;
+    max-height: 2000px;
+    opacity: 1;
+}
+
+.vc-dmorg-folder-contents.vc-dmorg-collapsed {
+    max-height: 0;
+    opacity: 0;
+}
+
+/* Drop target highlight */
+.vc-dmorg-drop-target {
+    background: rgba(88, 101, 242, 0.1);
+    border-radius: 4px;
+}
+
+/* DM item wrapper */
+.vc-dmorg-dm-item {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    min-height: 42px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.vc-dmorg-dm-item:hover {
+    background-color: var(--background-modifier-hover);
+}
+
+.vc-dmorg-dm-content {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    min-height: 42px;
+    box-sizing: border-box;
+}
+
+.vc-dmorg-dm-content > * {
+    flex: 1;
+    min-width: 0;
+}
+
+.vc-dmorg-dm-content > a,
+.vc-dmorg-dm-content > div {
+    width: 100%;
+}
+
+
+/* Priority star */
+.vc-dmorg-priority-star {
+    color: #faa61a;
+    font-size: 12px;
+    flex-shrink: 0;
+    position: absolute;
+    left: 4px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 1;
+    pointer-events: none;
+}
+
+/* DM note */
+.vc-dmorg-dm-note {
+    font-size: 11px;
+    color: #a3a6aa;
+    padding: 0 8px 2px 48px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    line-height: 14px;
+}
+
+/* Settings modal */
+.vc-dmorg-settings-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.vc-dmorg-settings-color-swatch {
+    width: 32px;
+    height: 32px;
+    border-radius: 4px;
+    flex-shrink: 0;
+    position: relative;
+    overflow: hidden;
+    cursor: pointer;
+}
+
+.vc-dmorg-settings-color-input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    cursor: pointer;
+}
+
+/* Uncategorized drop zone */
+.vc-dmorg-uncategorized-drop {
+    padding: 4px 8px;
+    margin: 4px 0;
+    border-radius: 4px;
+    text-align: center;
+    font-size: 11px;
+    color: #72767d;
+    border: 1px dashed transparent;
+    transition: all 0.15s ease;
+}
+
+.vc-dmorg-uncategorized-drop.vc-dmorg-drop-target {
+    border-color: #5865f2;
+    color: #a3a6aa;
+}

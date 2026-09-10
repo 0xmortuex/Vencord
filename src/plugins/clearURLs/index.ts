@@ -16,6 +16,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
+import { DataStore } from "@api/index";
 import {
     MessageObject
 } from "@api/MessageEvents";
@@ -48,8 +49,12 @@ interface RuleSet {
 }
 
 export default definePlugin({
+    // Enabled out of the box in this build (my everyday set); an explicit
+    // off-toggle in settings still wins over this default.
+    enabledByDefault: true,
     name: "ClearURLs",
     description: "Automatically removes tracking elements from URLs you send",
+    tags: ["Privacy", "Utility"],
     authors: [Devs.adryd, Devs.thororen],
 
     rules: [] as RuleSet[],
@@ -71,12 +76,27 @@ export default definePlugin({
     },
 
     async createRules() {
-        const res = await fetch(CLEAR_URLS_JSON_URL)
-            .then(res => res.json()) as ClearUrlsData;
+        // The rules JSON was fetched from the network on EVERY Discord launch
+        // with no cache and no offline fallback. Cache it for a week; use the
+        // cached copy immediately (and when offline) and refresh when stale.
+        const CACHE_KEY = "ClearURLs_rules_cache";
+        const TTL = 7 * 24 * 60 * 60 * 1000;
+        const cached = await DataStore.get<{ at: number; data: ClearUrlsData; }>(CACHE_KEY).catch(() => null);
+        let data: ClearUrlsData | null = cached?.data ?? null;
+        const fresh = !!cached && (Date.now() - cached.at) < TTL;
+        if (!fresh) {
+            try {
+                const res = await fetch(CLEAR_URLS_JSON_URL).then(r => r.json()) as ClearUrlsData;
+                data = res;
+                DataStore.set(CACHE_KEY, { at: Date.now(), data: res }).catch(() => { });
+            } catch (e) {
+                if (!data) throw e; // nothing cached to fall back on
+            }
+        }
 
         this.rules = [];
 
-        for (const [name, provider] of Object.entries(res.providers)) {
+        for (const [name, provider] of Object.entries(data!.providers)) {
             const urlPattern = new RegExp(provider.urlPattern, "i");
 
             const rules = provider.rules?.map(rule => new RegExp(rule, "i"));

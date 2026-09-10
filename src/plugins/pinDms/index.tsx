@@ -18,7 +18,7 @@ import { Clickable, ContextMenuApi, FluxDispatcher, Menu, React } from "@webpack
 import { contextMenus } from "./components/contextMenu";
 import { openCategoryModal, requireSettingsModal } from "./components/CreateCategoryModal";
 import { DEFAULT_CHUNK_SIZE } from "./constants";
-import { canMoveCategory, canMoveCategoryInDirection, Category, categoryLen, collapseCategory, getAllUncollapsedChannels, getCategoryByIndex, getSections, init, isPinned, moveCategory, removeCategory, usePinnedDms } from "./data";
+import { canMoveCategory, canMoveCategoryInDirection, Category, categoryLen, collapseCategory, frameMemo,getAllUncollapsedChannels, getCategoryByIndex, getSections, init, isPinned, moveCategory, removeCategory, usePinnedDms } from "./data";
 
 interface ChannelComponentProps {
     children: React.ReactNode,
@@ -64,8 +64,12 @@ export const settings = definePluginSettings({
 });
 
 export default definePlugin({
+    // Enabled out of the box in this build (my everyday set); an explicit
+    // off-toggle in settings still wins over this default.
+    enabledByDefault: true,
     name: "PinDMs",
     description: "Allows you to pin private channels to the top of your DM list. To pin/unpin or re-order pins, right click DMs",
+    tags: ["Friends", "Organisation"],
     authors: [Devs.Ven, Devs.Aria],
     settings,
     contextMenus,
@@ -113,7 +117,7 @@ export default definePlugin({
                 {
                     // Override scrollToChannel to properly account for pinned channels
                     match: /(?<=scrollTo\(\{to:\i\}\):\(\i\+=)(\d+)\*\(.+?(?=,)/,
-                    replace: "$self.getScrollOffset(arguments[0],$1,this.props.padding,this.state.preRenderedChildren,$&)"
+                    replace: "$self.getScrollOffset(arguments[0],$1,this?.props?.padding,this?.state?.preRenderedChildren,$&)"
                 },
                 {
                     match: /(scrollToChannel\(\i\){.{1,300})(this\.props\.privateChannelIds)/,
@@ -356,7 +360,12 @@ export default definePlugin({
         if (category.channels.length === 0) return [];
 
         if (settings.store.pinOrder === PinOrder.LastMessage) {
-            return PrivateChannelSortStore.getPrivateChannelIds().filter(c => category.channels.includes(c));
+            // Called once per pinned row per render; memoized per render pass
+            // (see frameMemo) and filtered with a Set instead of Array.includes.
+            return frameMemo("category-channels:" + category.id, () => {
+                const inCategory = new Set(category.channels);
+                return PrivateChannelSortStore.getPrivateChannelIds().filter(c => inCategory.has(c));
+            });
         }
 
         return category?.channels ?? [];

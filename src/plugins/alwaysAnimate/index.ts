@@ -20,8 +20,12 @@ import { Devs } from "@utils/constants";
 import definePlugin from "@utils/types";
 
 export default definePlugin({
+    // Enabled out of the box in this build (my everyday set); an explicit
+    // off-toggle in settings still wins over this default.
+    enabledByDefault: true,
     name: "AlwaysAnimate",
     description: "Animates anything that can be animated",
+    tags: ["Appearance", "Fun"],
     authors: [Devs.FieryFlames],
 
     patches: [

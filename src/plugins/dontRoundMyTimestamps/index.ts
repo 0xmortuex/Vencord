@@ -21,9 +21,13 @@ import definePlugin from "@utils/types";
 import { moment } from "@webpack/common";
 
 export default definePlugin({
+    // Enabled out of the box in this build (my everyday set); an explicit
+    // off-toggle in settings still wins over this default.
+    enabledByDefault: true,
     name: "DontRoundMyTimestamps",
     authors: [Devs.Lexi],
     description: "Always rounds relative timestamps down, so 7.6y becomes 7y instead of 8y",
+    tags: ["Appearance", "Utility"],
 
     start() {
         moment.relativeTimeRounding(Math.floor);

@@ -211,8 +211,12 @@ export async function setRpc(disable?: boolean) {
 }
 
 export default definePlugin({
+    // Enabled out of the box in this build (my everyday set); an explicit
+    // off-toggle in settings still wins over this default.
+    enabledByDefault: true,
     name: "CustomRPC",
     description: "Add a fully customisable Rich Presence (Game status) to your Discord profile",
+    tags: ["Activity", "Customisation"],
     authors: [Devs.captain, Devs.AutumnVN, Devs.nin0dev],
     dependencies: ["UserSettingsAPI"],
     // This plugin's patch is not important for functionality, so don't require a restart

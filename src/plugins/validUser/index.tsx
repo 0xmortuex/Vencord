@@ -173,10 +173,14 @@ function MentionWrapper({ data, UserMention, RoleMention, parse, props }: Mentio
 }
 
 export default definePlugin({
+    // Enabled out of the box in this build (my everyday set); an explicit
+    // off-toggle in settings still wins over this default.
+    enabledByDefault: true,
     name: "ValidUser",
     description: "Fix mentions for unknown users showing up as '@unknown-user' (hover over a mention to fix it)",
+    tags: ["Chat", "Utility"],
     authors: [Devs.Ven, Devs.Dolfies],
-    tags: ["MentionCacheFix"],
+    searchTerms: ["MentionCacheFix"],
 
     patches: [
         {

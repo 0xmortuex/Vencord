@@ -29,7 +29,7 @@ import { useAwaiter } from "@utils/react";
 import definePlugin from "@utils/types";
 import { Guild, User } from "@vencord/discord-types";
 import { findCssClassesLazy } from "@webpack";
-import { Alerts, Clickable, IconUtils, Menu, Parser } from "@webpack/common";
+import { Clickable, ConfirmModal,IconUtils, Menu, openModal, Parser } from "@webpack/common";
 
 import { Auth, initAuth, updateAuth } from "./auth";
 import { openReviewsModal } from "./components/ReviewModal";
@@ -70,6 +70,7 @@ const userContextPatch: NavContextMenuPatchCallback = (children, { user }: { use
 export default definePlugin({
     name: "ReviewDB",
     description: "Review other users (Adds a new settings to profiles)",
+    tags: ["Friends", "Servers"],
     authors: [Devs.mantikafasi, Devs.Ven],
 
     settings,
@@ -92,7 +93,8 @@ export default definePlugin({
         },
         {
             // User popout
-            find: /\.POPOUT,onClose:\i}\),nicknameIcons:.+?\.isProvisional/,
+            // Same find as ShowConnections
+            find: "#{intl::USER_PROFILE_FRIEND_REQUEST_TOAST}",
             replacement: {
                 match: /user:(\i),widgets:.{0,100}?\}\),/,
                 replace: "$&$self.renderProfileComponent({user:$1}),"
@@ -124,8 +126,9 @@ export default definePlugin({
                 }
             }
 
-            if (user.notification) {
-                const props = user.notification.type === NotificationType.Ban ? {
+            const { notification } = user;
+            if (notification) {
+                const props = notification.type === NotificationType.Ban ? {
                     cancelText: "Appeal",
                     confirmText: "Ok",
                     onCancel: async () =>
@@ -138,18 +141,23 @@ export default definePlugin({
                         )
                 } : {};
 
-                Alerts.show({
-                    title: user.notification.title,
-                    body: (
-                        Parser.parse(
-                            user.notification.content,
+                openModal(modalProps => (
+                    <ConfirmModal
+                        {...modalProps}
+                        title={notification.title}
+                        confirmText={props.confirmText ?? "OK"}
+                        cancelText={props.cancelText}
+                        variant="primary"
+                        onCancel={props.onCancel}
+                    >
+                        {Parser.parse(
+                            notification.content,
                             false
-                        )
-                    ),
-                    ...props
-                });
+                        )}
+                    </ConfirmModal>
+                ));
 
-                readNotification(user.notification.id);
+                readNotification(notification.id);
             }
         }, 4000);
     },

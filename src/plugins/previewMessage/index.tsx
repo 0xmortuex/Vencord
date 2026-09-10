@@ -39,12 +39,23 @@ const getImageBox = (url: string): Promise<{ width: number, height: number; } | 
     });
 
 
-const getAttachments = async (channelId: string) =>
+// Object URLs created for the most recent preview. They were never revoked, so
+// every preview with attachments kept the full file bytes alive for the life of
+// the page; now the previous preview's URLs are released when a new preview is
+// built, and everything is released on stop().
+let previewUrls: string[] = [];
+function revokePreviewUrls() {
+    for (const u of previewUrls) { try { URL.revokeObjectURL(u); } catch { } }
+    previewUrls = [];
+}
+
+const buildAttachments = async (channelId: string) =>
     await Promise.all(
         UploadAttachmentStore.getUploads(channelId, DraftType.ChannelMessage)
             .map(async (upload: CloudUpload) => {
                 const { isImage, filename, spoiler, item: { file } } = upload;
                 const url = URL.createObjectURL(file);
+                previewUrls.push(url);
                 const attachment: MessageAttachment = {
                     id: generateId(),
                     filename: spoiler ? "SPOILER_" + filename : filename,
@@ -68,6 +79,11 @@ const getAttachments = async (channelId: string) =>
                 return attachment;
             })
     );
+
+const getAttachments = async (channelId: string) => {
+    revokePreviewUrls();
+    return buildAttachments(channelId);
+};
 
 
 const PreviewIcon: IconComponent = ({ height = 20, width = 20, className }) => {
@@ -121,8 +137,13 @@ const PreviewButton: ChatBarButtonFactory = ({ isAnyChat, isEmpty, type: { attac
 };
 
 export default definePlugin({
+    // Enabled out of the box in this build (my everyday set); an explicit
+    // off-toggle in settings still wins over this default.
+    enabledByDefault: true,
+    stop() { revokePreviewUrls(); },
     name: "PreviewMessage",
     description: "Lets you preview your message before sending it.",
+    tags: ["Chat", "Utility"],
     authors: [Devs.Aria],
     // start early to ensure we're the first plugin to add our button
     // This makes the popping in less awkward

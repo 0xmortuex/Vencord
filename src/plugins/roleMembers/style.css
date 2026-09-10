@@ -1,0 +1,140 @@
+/*
+ * Vencord, a Discord client mod
+ * Copyright (c) 2024 Vendicated and contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+.vc-rolemembers-header {
+    flex: 1;
+}
+
+.vc-rolemembers-header-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.vc-rolemembers-role-dot {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    display: inline-block;
+    flex-shrink: 0;
+}
+
+.vc-rolemembers-subtitle {
+    margin-top: 2px;
+    color: var(--text-muted);
+}
+
+.vc-rolemembers-search {
+    padding: 0 16px 12px;
+    border-bottom: 1px solid var(--background-modifier-accent);
+}
+
+.vc-rolemembers-empty {
+    text-align: center;
+    padding: 60px 0;
+    color: var(--text-muted);
+}
+
+.vc-rolemembers-scroller {
+    padding: 0 8px;
+}
+
+/* ===== ALL ROLES MODAL - Role rows ===== */
+.vc-rolemembers-role-row {
+    display: flex;
+    align-items: center;
+    padding: 10px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    gap: 12px;
+    background-color: var(--background-secondary);
+    margin-bottom: 2px;
+    transition: background-color 0.15s ease;
+}
+
+.vc-rolemembers-role-row:hover {
+    background-color: var(--background-modifier-hover);
+}
+
+.vc-rolemembers-role-row .vc-rolemembers-role-dot {
+    width: 14px;
+    height: 14px;
+}
+
+.vc-rolemembers-role-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 15px;
+}
+
+/* ===== MEMBERS MODAL - Member rows ===== */
+.vc-rolemembers-member-row {
+    display: flex;
+    align-items: center;
+    padding: 8px 12px;
+    border-radius: 4px;
+    gap: 12px;
+    transition: background-color 0.1s ease;
+}
+
+.vc-rolemembers-member-row:hover {
+    background-color: var(--background-modifier-hover);
+}
+
+.vc-rolemembers-avatar {
+    width: 32px !important;
+    height: 32px !important;
+    border-radius: 50%;
+    flex-shrink: 0;
+    object-fit: cover;
+}
+
+.vc-rolemembers-member-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.vc-rolemembers-member-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-normal);
+}
+
+.vc-rolemembers-member-sub {
+    color: var(--text-muted);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ===== Back button - pill shaped ===== */
+.vc-rolemembers-back-button {
+    background: var(--background-modifier-accent);
+    border: none;
+    color: var(--white);
+    cursor: pointer;
+    padding: 6px 12px;
+    border-radius: 16px;
+    font-size: 14px;
+    font-weight: 500;
+    margin-right: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    transition: background-color 0.15s ease;
+}
+
+.vc-rolemembers-back-button:hover {
+    background-color: var(--background-modifier-hover);
+}
