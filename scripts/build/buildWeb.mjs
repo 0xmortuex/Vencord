@@ -24,6 +24,7 @@ import { appendFile, mkdir, readdir, readFile, rm, writeFile } from "fs/promises
 import { join } from "path";
 import Zip from "zip-local";
 
+import { buildManifest, readPluginEntries } from "./pluginRanges.mjs";
 import { BUILD_TIMESTAMP, commonOpts, globPlugins, IS_DEV, IS_REPORTER, IS_ANTI_CRASH_TEST, VERSION, commonRendererPlugins, buildOrWatchAll, stringifyValues } from "./common.mjs";
 
 /**
@@ -116,6 +117,15 @@ const buildConfigs = [
 
 await buildOrWatchAll(buildConfigs);
 
+// Which plugin owns which part of the extension bundle, for the Vex browser's per-plugin memory report
+// (scripts/build/pluginRanges.mjs). Not made in watch mode: its source maps are inline.
+const pluginRanges = process.argv.includes("--watch") ? null : JSON.stringify(buildManifest({
+    bundle: "dist/Vencord.js",
+    bundleText: await readFile("dist/extension.js"),
+    mapText: await readFile("dist/extension.js.map", "utf-8"),
+    nameByEntry: await readPluginEntries("./src")
+}));
+
 /**
  * @type {(dir: string) => Promise<string[]>}
  */
@@ -148,6 +158,7 @@ async function buildExtension(target, files) {
     const entries = {
         "dist/Vencord.js": await readFile("dist/extension.js"),
         "dist/Vencord.css": await readFile("dist/extension.css"),
+        ...(pluginRanges ? { "dist/vencord-plugin-ranges.json": Buffer.from(pluginRanges) } : {}),
         ...await loadDir("dist/vendor/monaco", "dist/"),
         ...Object.fromEntries(await Promise.all(files.map(async f => {
             let content = await readFile(join("browser", f));
